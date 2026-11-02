@@ -427,7 +427,7 @@ td, th { border-bottom: 1px solid var(--line); padding: 6px 4px; text-align: lef
     else if (!(await startMic())) return;
     mode = newMode;
     frames = []; trail = []; liveNotes = new Map(); liveTimeline = null;
-    if (screen) { screen.frames = []; screen.notes = []; screen.barAcc = { notes: [] }; screen.barGuide = null; scrollToStage(); }
+    if (screen) { screen.frames = []; screen.notes = []; screen.barAcc = { notes: [] }; screen.segBuf = []; screen.barGuide = null; scrollToStage(); }
     player.seekTo(0, true);
     player.playVideo();
     $('singBtn').disabled = true; $('recGuideBtn').disabled = true; $('tabGuideBtn').disabled = true; $('stopBtn').disabled = false;
@@ -597,7 +597,7 @@ td, th { border-bottom: 1px solid var(--line); padding: 6px 4px; text-align: lef
     try { await video.play(); } catch (e) {}
     screen = { stream, video, canvas: document.createElement('canvas'), layout: null, layoutAt: -1e9, steps: [], useFull: false, missSince: performance.now(),
       pairs: [], userPairs: [], offset: null, fit: 0, offsetAt: 0, frames: [], notes: [], rel: null, an: null, abuf: null, lastSample: 0,
-      segPrev: null, segPrevT: 0, segW: 0, speeds: [], barAcc: { notes: [] }, barGuide: null, barGuideAt: 0 };
+      segPrev: null, segPrevT: 0, segW: 0, speeds: [], segBuf: [], barAcc: { notes: [] }, barGuide: null, barGuideAt: 0 };
     screen.ctx = screen.canvas.getContext('2d', { willReadFrequently: true });
     if (stream.getAudioTracks().length) {
       audioCtx = audioCtx || new (window.AudioContext || window.webkitAudioContext)();
@@ -714,18 +714,24 @@ td, th { border-bottom: 1px solid var(--line); padding: 6px 4px; text-align: lef
   }
   function readBarsAhead(g, t, now) {
     const L = screen.layout;
-    if (g.img.width !== screen.segW) { screen.segW = g.img.width; screen.speeds = []; screen.segPrev = null; }
+    if (g.img.width !== screen.segW) { screen.segW = g.img.width; screen.speeds = []; screen.segPrev = null; screen.segBuf = []; }
     const segs = K.readBarSegments(g.img, g.rect, L);
-    if (!screen.segPrev) { screen.segPrev = segs; screen.segPrevT = t; }
+    // 速さは実時間（performance.now）で測る（動画の時刻は更新がまばらでがたつくため）
+    const rt = now / 1000;
+    if (!screen.segPrev) { screen.segPrev = segs; screen.segPrevT = rt; }
     else {
-      const v = K.estimateScrollSpeed(screen.segPrev, segs, t - screen.segPrevT, { maxDx: g.rect.w * 0.5 });
+      const v = K.estimateScrollSpeed(screen.segPrev, segs, rt - screen.segPrevT, { maxDx: g.rect.w * 0.5 });
       // 同じ映像フレームを2回読んだ時（動いていない時）は前の読みを残す
-      if (v > 0) { screen.speeds.push(v); if (screen.speeds.length > 60) screen.speeds.shift(); screen.segPrev = segs; screen.segPrevT = t; }
-      else if (t - screen.segPrevT > 1 || t < screen.segPrevT) { screen.segPrev = segs; screen.segPrevT = t; }
+      if (v > 0) { screen.speeds.push(v); if (screen.speeds.length > 60) screen.speeds.shift(); screen.segPrev = segs; screen.segPrevT = rt; }
+      else if (rt - screen.segPrevT > 1) { screen.segPrev = segs; screen.segPrevT = rt; }
     }
     const sp = scrollSpeed();
-    if (!sp) return;
-    K.accumulateBarNotes(screen.barAcc, segs, t, (L.lineLeft + L.lineRight) / 2, sp);
+    // 速さが分かるまでの読み（歌い始め）は取っておき、分かった時点でまとめて使う
+    if (!sp) { screen.segBuf.push({ segs, t }); if (screen.segBuf.length > 90) screen.segBuf.shift(); return; }
+    // 現在位置のきらきら（エフェクト）を避けて、少し右から読む
+    const lx = (L.lineLeft + L.lineRight) / 2, o = { nearFrom: g.rect.w * 0.015 };
+    if (screen.segBuf.length) { screen.segBuf.forEach((b) => K.accumulateBarNotes(screen.barAcc, b.segs, b.t, lx, sp, o)); screen.segBuf = []; }
+    K.accumulateBarNotes(screen.barAcc, segs, t, lx, sp, o);
     if (screen.offset != null && now - screen.barGuideAt > 300) { screen.barGuideAt = now; screen.barGuide = K.barNotesToGuide(screen.barAcc, screen.offset); }
   }
   function addScreenNote(t, m) {
@@ -746,7 +752,7 @@ td, th { border-bottom: 1px solid var(--line); padding: 6px 4px; text-align: lef
   function screenDebug() {
     if (!screen) return null;
     return { layout: screen.layout, useFull: screen.useFull, steps: screen.steps, offset: screen.offset, fit: screen.fit, offsetSrc: screen.offsetSrc || null,
-      shift: screen.shift || 0, audFit: screen.audFit, usrFit: screen.usrFit, speed: scrollSpeed(), speeds: screen.speeds.length,
+      shift: screen.shift || 0, audFit: screen.audFit, usrFit: screen.usrFit, speed: scrollSpeed(), speeds: screen.speeds.map((v) => +v.toFixed(1)),
       bars: screen.barAcc.notes.map((n) => [n.sn ? +(n.ss / n.sn).toFixed(3) : null, n.en ? +(n.es / n.en).toFixed(3) : null, +(n.rs / n.rn).toFixed(2), n.rn]),
       pairs: screen.pairs.length, userPairs: screen.userPairs.length, video: [screen.video.videoWidth, screen.video.videoHeight],
       frames: { t: screen.frames.map((f) => +f.t.toFixed(3)), rel: screen.frames.map((f) => (f.rel == null ? null : +f.rel.toFixed(2))) } };

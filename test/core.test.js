@@ -594,8 +594,9 @@ test('readBarSegments / estimateScrollSpeed / accumulateBarNotes: recovers short
   const MEL = [];
   let t = 1;
   // 長い音・短い音・同じ高さの短い音の連続（隙間あり）を混ぜる
-  const seq = [[9, 0.6], [11, 0.12], [11, 0.12], [12, 0.1], [9, 0.5], [7, 0.08], [9, 0.15], [14, 0.9], [12, 0.11], [11, 0.11], [9, 0.4]];
-  for (const [r, d] of seq) { MEL.push({ t, d, rel: r }); t += d + 0.05; }
+  // 最後は丸い短いバーが1画素の隙間で並ぶ所
+  const seq = [[9, 0.6], [11, 0.12], [11, 0.12], [12, 0.1], [9, 0.5], [7, 0.08], [9, 0.15], [14, 0.9], [12, 0.11], [11, 0.11], [9, 0.4], [5, 0.06, 0.006], [5, 0.06, 0.006], [5, 0.06, 0.006], [5, 0.06]];
+  for (const [r, d, gap] of seq) { MEL.push({ t, d, rel: r }); t += d + (gap || 0.05); }
   const frame = (now) => {
     const data = new Uint8ClampedArray(w * h * 4);
     const set = (x, y, c) => { const i = (y * w + x) * 4; data[i] = c[0]; data[i + 1] = c[1]; data[i + 2] = c[2]; data[i + 3] = 255; };
@@ -606,6 +607,8 @@ test('readBarSegments / estimateScrollSpeed / accumulateBarNotes: recovers short
       for (let x = Math.max(0, xa); x <= Math.min(w - 1, xb); x++) for (let dy = -2; dy <= 2; dy++) set(x, bottom - n.rel * step + dy, x < lineX ? [200, 200, 200] : [255, 90, 170]);
     }
     for (let y = top; y <= bottom; y++) for (let x = lineX - 1; x <= lineX + 1; x++) set(x, y, [255, 90, 170]);
+    // 現在位置のきらきら（毎フレーム違う所に出る）
+    for (let k = 0; k < 6; k++) { const x = lineX + 3 + ((now * 997 + k * 7) % 6 | 0), y = top + ((now * 131 + k * 37) % 90 | 0); for (let dx = 0; dx < 2; dx++) for (let dy = 0; dy < 2; dy++) set(x + dx, y + dy, [255, 90, 170]); }
     return { data, width: w, height: h };
   };
   const rect = { x: 0, y: 0, w, h: 540 };
@@ -619,7 +622,8 @@ test('readBarSegments / estimateScrollSpeed / accumulateBarNotes: recovers short
     const v = K.estimateScrollSpeed(prev, segs, now - prevT);
     if (v) speeds.push(v);
     prev = segs; prevT = now;
-    if (speeds.length >= 5) K.accumulateBarNotes(acc, segs, now, (L.lineLeft + L.lineRight) / 2, median(speeds));
+    // 速さの推定が5%ずれていても、現在位置の近くだけ使うので時刻はずれない
+    if (speeds.length >= 5) K.accumulateBarNotes(acc, segs, now, (L.lineLeft + L.lineRight) / 2, median(speeds) * 1.05, { nearFrom: 10 });
   }
   const sp = median(speeds);
   assert.ok(Math.abs(sp - pps) < 4, 'speed ' + sp);
@@ -628,7 +632,7 @@ test('readBarSegments / estimateScrollSpeed / accumulateBarNotes: recovers short
   g.forEach((n, i) => {
     assert.equal(n.midi, MEL[i].rel + 50);
     assert.ok(Math.abs(n.t - MEL[i].t) < 0.03, 't ' + n.t + ' vs ' + MEL[i].t);
-    assert.ok(Math.abs(n.d - MEL[i].d) < 0.03, 'd ' + n.d + ' vs ' + MEL[i].d);
+    assert.ok(Math.abs(n.d - MEL[i].d) < 0.03 + MEL[i].d * 0.1, 'd ' + n.d + ' vs ' + MEL[i].d);
   });
   function median(a) { const s = a.slice().sort((x, y) => x - y); return s[s.length >> 1]; }
 });

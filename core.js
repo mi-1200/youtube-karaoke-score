@@ -935,7 +935,7 @@
       const yc = ok ? (lo + hi) / 2 : null;
       if (ok && cur && Math.abs(yc - cur.yRef) <= tolY) { cur.x1 = x; cur.ys.push(yc); if (cur.ys.length <= 6) cur.yRef = median(cur.ys); miss = 0; continue; }
       if (ok) { close(); cur = { x0: x, x1: x, ys: [yc], yRef: yc }; continue; }
-      if (cur && ++miss > 1) close();
+      if (cur) close(); // 1列でも途切れたら別のバー（丸い短いバーが並ぶ所を分ける）
     }
     if (cur) { const keep = cur; close(); if (segs.length && segs[segs.length - 1].x0 === keep.x0) segs[segs.length - 1].clipR = keep.x1 >= xb - 1; }
     return segs;
@@ -969,26 +969,30 @@
   }
   // 各フレームで読んだバーを、時刻（バーが現在位置に来る時刻）に直して1本ずつまとめる
   // acc: {notes: []} を使い回す。t: そのフレームの曲の時刻, lineX: 現在位置の x, v: 速さ（画素/秒）
-  function accumulateBarNotes(acc, segs, t, lineX, v) {
+  // 速さの推定の誤差が効かないよう、現在位置のすぐ右（opts.nearFrom〜nearTo 画素）にある出だしだけを使う
+  function accumulateBarNotes(acc, segs, t, lineX, v, opts) {
+    opts = opts || {};
     if (!(v > 0)) return acc;
-    const N = acc.notes;
+    const from = opts.nearFrom || 0, to = from + (opts.nearLen || Math.max(40, v * 0.6));
+    const N = acc.notes, used = new Set(), tol = opts.tol || 0.045;
     for (const s of segs) {
-      const st = s.clipL ? null : t + (s.x0 - lineX) / v;
-      const en = s.clipR ? null : t + (s.x1 + 1 - lineX) / v;
+      if (s.clipL) continue;
+      const dx = s.x0 - lineX;
+      if (dx < from || dx > to) continue;
+      const st = t + dx / v;
+      const en = s.clipR ? null : st + (s.x1 + 1 - s.x0) / v;
       let hit = null;
-      for (let k = N.length - 1; k >= 0 && k >= N.length - 60; k--) {
+      for (let k = N.length - 1; k >= 0 && k >= N.length - 40; k--) {
         const n = N[k];
-        if (Math.abs(n.rs / n.rn - s.rel) > 0.5) continue;
-        if (st != null && n.sn && Math.abs(n.ss / n.sn - st) < 0.08) { hit = n; break; }
-        if (st == null && en != null && n.en && Math.abs(n.es / n.en - en) < 0.08) { hit = n; break; }
+        if (!used.has(n) && Math.abs(n.rs / n.rn - s.rel) <= 0.5 && Math.abs(n.ss / n.sn - st) < tol) { hit = n; break; }
       }
       if (!hit) {
-        if (st == null) continue; // 出だしが見えていないバーからは新しく作らない
         hit = { ss: 0, sn: 0, es: 0, en: 0, rs: 0, rn: 0 };
         let k = N.length; while (k > 0 && N[k - 1].ss / N[k - 1].sn > st) k--;
         N.splice(k, 0, hit);
       }
-      if (st != null) { hit.ss += st; hit.sn++; }
+      used.add(hit);
+      hit.ss += st; hit.sn++;
       if (en != null) { hit.es += en; hit.en++; }
       hit.rs += s.rel; hit.rn++;
     }
@@ -997,18 +1001,27 @@
   // まとめたバー → ガイドの音符。offset: 相対値→MIDI のずれ
   function barNotesToGuide(acc, offset, opts) {
     opts = opts || {};
-    const minObs = opts.minObs || 2;
-    const out = [];
+    const minObs = opts.minObs || 3;
+    let out = [];
     for (const n of acc.notes) {
       if (n.rn < minObs || !n.sn || !n.en) continue;
       const t = n.ss / n.sn, d = n.es / n.en - t;
       if (d < 0.03 || d > 20) continue;
-      out.push({ t, d, midi: Math.round(n.rs / n.rn + offset) });
+      out.push({ t, d, midi: Math.round(n.rs / n.rn + offset), w: n.rn });
     }
     out.sort((a, b) => a.t - b.t);
+    // 同じ高さで重なっているもの（同じバーの読み違い）は1本にまとめる
+    const merged = [];
+    for (const n of out) {
+      const pr = merged[merged.length - 1];
+      if (pr && pr.midi === n.midi && n.t < pr.t + pr.d - 0.02) {
+        pr.d = Math.max(pr.d, n.t + n.d - pr.t); pr.w += n.w;
+      } else merged.push({ ...n });
+    }
+    out = merged;
     // 重なりは前の音を縮める
     for (let i = 1; i < out.length; i++) if (out[i - 1].t + out[i - 1].d > out[i].t) out[i - 1].d = Math.max(0.03, out[i].t - out[i - 1].t);
-    return out;
+    return out.map((n) => ({ t: n.t, d: n.d, midi: n.midi }));
   }
   // (相対値, 実音) の組から、相対値→MIDI のずれ（オフセット）を推定
   // pairs: [{rel, midi}]（midi は動画のガイド音や歌声）。オクターブ違いを許して最も合うずれを探し、
