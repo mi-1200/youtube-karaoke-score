@@ -689,3 +689,17 @@ test('findBarLayout / readBarSegments: dark bars with a red line over a bright, 
   assert.equal(segs.length, 3, JSON.stringify(segs));
   assert.ok(Math.abs((rels[0] - rels[1]) - 2) < 0.4 && Math.abs((rels[2] - rels[0]) - 2) < 0.4, JSON.stringify(rels));
 });
+
+test('findBarLayout: orange bars and line', () => {
+  const w = 960, h = 130, top = 10, bottom = 110, step = 4, lineX = 310;
+  const data = new Uint8ClampedArray(w * h * 4);
+  const set = (x, y, c) => { const i = (y * w + x) * 4; data[i] = c[0]; data[i + 1] = c[1]; data[i + 2] = c[2]; data[i + 3] = 255; };
+  for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) set(x, y, [95, 95, 95]);
+  for (let k = 2; k < 25; k += 2) for (let x = 0; x < w; x++) set(x, bottom - k * step, [175, 175, 175]);
+  for (let y = top; y <= bottom; y++) for (let x = lineX - 1; x <= lineX + 1; x++) set(x, y, [211, 96, 23]);
+  [[lineX + 3, lineX + 12, 7], [lineX + 16, lineX + 25, 7], [lineX + 30, lineX + 80, 9]].forEach(([a, b, r]) => { for (let x = a; x <= b; x++) for (let dy = -2; dy <= 2; dy++) set(x, bottom - r * step + dy, [255, 104, 0]); });
+  const img = { data, width: w, height: h }, rect = { x: 0, y: 0, w, h: 540 };
+  const L = K.findBarLayout(img, rect);
+  assert.ok(L && L.color === 'orange' && Math.abs(L.lineLeft - lineX) <= 2, JSON.stringify(L));
+  assert.deepEqual(K.readBarSegments(img, rect, L).map((s) => Math.round(s.rel)), [7, 7, 9]);
+});

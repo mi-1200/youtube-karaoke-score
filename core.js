@@ -808,8 +808,10 @@
   // 黒（濃い灰色）のバーに赤い縦線の動画もある（例: カラオケ音源ちゃんねる）。歌い終わったバーは色が付く
   function isBarDark(r, g, b) { const mx = Math.max(r, g, b), mn = Math.min(r, g, b); return mx <= 85 && mx >= 12 && mx - mn <= 10; }
   function isLineCrimson(r, g, b) { return r > 130 && g < 60 && b > 35 && b < 120 && r - b > 70; }
-  const BAR_TESTS = { pink: isBarPink, gold: isBarGold, dark: isBarDark };
-  const LINE_TESTS = { pink: isBarPink, gold: isBarGold, dark: isLineCrimson };
+  // オレンジのバー・縦線の動画もある
+  function isBarOrange(r, g, b) { return r > 180 && g >= 70 && g <= 145 && b < 70 && r - g > 80; }
+  const BAR_TESTS = { pink: isBarPink, gold: isBarGold, dark: isBarDark, orange: isBarOrange };
+  const LINE_TESTS = { pink: isBarPink, gold: isBarGold, dark: isLineCrimson, orange: isBarOrange };
   function barTest(layout) { return BAR_TESTS[(layout && layout.color) || 'pink'] || isBarPink; }
   // img: {data, width, height}（RGBA）, rect: 動画の範囲 {x,y,w,h}（img の画素座標）
   // 縦線（現在位置）と音程バーの帯を探す。見つからなければ null
@@ -1042,12 +1044,12 @@
     // 音程の判定には使わないので外し、その範囲を rap として返す
     const rap = [];
     if (opts.dropRap !== false) {
-      const runMin = opts.rapMin || 10, keep = new Array(out.length).fill(true);
+      const runMin = opts.rapMin || 16, keep = new Array(out.length).fill(true);
       let i = 0;
       while (i < out.length) {
         let j = i;
         while (j + 1 < out.length && out[j + 1].d < 0.2 && out[i].d < 0.2 && Math.abs(out[j + 1].rel - out[i].rel) < 0.2 && out[j + 1].t - (out[j].t + out[j].d) < 0.25) j++;
-        if (j - i + 1 >= runMin && out[j].t + out[j].d - out[i].t >= 1.2) {
+        if (j - i + 1 >= runMin && out[j].t + out[j].d - out[i].t >= 1.8) {
           for (let k = i; k <= j; k++) keep[k] = false;
           rap.push([out[i].t, out[j].t + out[j].d, out[i].rel]);
         }
