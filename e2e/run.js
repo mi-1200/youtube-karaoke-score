@@ -107,7 +107,20 @@ function makeMidi() {
   check('guide result mode', (await page.textContent('#resMode')).includes('ガイドメロディ採点'), await page.textContent('#resMode'));
   check('hit count line', /音程バー的中：\d+ \/ \d+/.test(await page.textContent('#resItems')), await page.textContent('#resItems'));
   await page.screenshot({ path: path.join(SHOTS, 'desktop-result-guide.png') });
+  {
+    const [ddl] = await Promise.all([page.waitForEvent('download'), page.click('#debugSaveBtn')]);
+    const dp = path.join(__dirname, 'debug.json'); await ddl.saveAs(dp);
+    const dbg = JSON.parse(fs.readFileSync(dp, 'utf8')); fs.unlinkSync(dp);
+    const n = dbg.frames.count;
+    check('debug log content', dbg.app === 'utascore-debug' && dbg.kind === 'sing' && n > 100 && dbg.frames.t.length === n && dbg.frames.midi.length === n && dbg.result && dbg.result.hasGuide && dbg.result.notes.length > 0 && dbg.guide.notes.length > 0 && dbg.env.sampleRate > 0,
+      { n, total: dbg.result && dbg.result.total, file: ddl.suggestedFilename() });
+    const stored = await page.evaluate(() => JSON.parse(localStorage.getItem('utascore.debug.v1') || '[]').map((l) => l.kind));
+    check('debug logs stored (latest first)', stored.length >= 2 && stored[0] === 'sing' && stored.includes('guide'), stored);
+  }
   await page.click('#closeResBtn');
+  await tab('settings');
+  check('debug list rendered', (await page.$$('#debugList button')).length >= 2);
+  await tab('guide');
 
   // offset / transpose
   const before = await page.evaluate(() => JSON.parse(localStorage.getItem('utascore.songs.v1')).dQw4w9WgXcQ);

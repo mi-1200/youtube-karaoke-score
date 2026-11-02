@@ -175,6 +175,11 @@ td, th { border-bottom: 1px solid var(--line); padding: 6px 4px; text-align: lef
     <label class="f">マイク感度（小さいほど敏感）<input id="gateInput" type="number" step="0.002" min="0.001" max="0.1" value="0.01"></label>
     <label class="f" style="flex-direction:row;align-items:center;gap:6px;color:var(--text)"><input id="echoInput" type="checkbox" checked> エコー除去（スピーカー使用時）</label>
   </div>
+  <h3>デバッグ記録</h3>
+  <p class="muted">採点やお手本録りのたびに、毎フレームの検出音程・音量・時刻、ガイド、設定、採点の内訳、端末情報を記録します（直近5回分。録音は含みません）。うまく採点されないときは、JSONを書き出して共有してください。</p>
+  <div id="debugList" class="muted">まだ記録がありません。</div>
+  <div class="row" style="margin-top:8px"><button id="debugClearBtn" class="danger">デバッグ記録をすべて削除</button></div>
+  <h3>メモ</h3>
   <p class="muted">イヤホンで伴奏を聴くと、伴奏がマイクに入らず採点が正確になります。歌声の線が音程バーより右（遅れ）に出るときは遅延補正を大きくしてください。マイクの音声は端末の中だけで処理し、録音・送信はしません。</p>
 </div>
 
@@ -188,6 +193,7 @@ td, th { border-bottom: 1px solid var(--line); padding: 6px 4px; text-align: lef
     <div class="comments" id="resComments"></div>
     <div class="row" style="justify-content:center;margin-top:14px">
       <button id="againBtn" class="primary">もう一度歌う</button>
+      <button id="debugSaveBtn">🐞 デバッグ記録を保存</button>
       <button id="closeResBtn">閉じる</button>
     </div>
   </div>
@@ -358,6 +364,7 @@ td, th { border-bottom: 1px solid var(--line); padding: 6px 4px; text-align: lef
     if (m === 'sing') {
       const s = song();
       const res = K.scorePerformance(frames, effGuide.length ? effGuide : null, {});
+      lastDebug = recordDebug('sing', { result: res });
       showResult(res);
       if (res.voicedSec >= 3) {
         s.history = s.history || [];
@@ -367,6 +374,7 @@ td, th { border-bottom: 1px solid var(--line); padding: 6px 4px; text-align: lef
       }
     } else if (m === 'guide') {
       const notes = K.framesToNotes(frames);
+      recordDebug('guide', { guideNotes: notes });
       if (notes.length < 5) { alertLine('音程がほとんど取れなかったため、お手本は保存しませんでした'); return; }
       const s = song();
       s.guide = notes; s.guideSource = 'お手本録り'; s.offset = 0; s.transpose = 0;
@@ -660,6 +668,69 @@ td, th { border-bottom: 1px solid var(--line); padding: 6px 4px; text-align: lef
     g.fillStyle = '#eef0fa'; g.font = 'bold 24px sans-serif'; g.textAlign = 'center'; g.textBaseline = 'middle';
     items.forEach((it, i) => { const a = ang(i); g.fillText(it.label.replace('（ガイドなし）', ''), cx + (R + 38) * Math.cos(a), cy + (R + 24) * Math.sin(a)); });
   }
+  /* ---------- デバッグ記録 ---------- */
+  const DEBUG_KEY = 'utascore.debug.v1', DEBUG_MAX = 5;
+  let lastDebug = null;
+  const r2 = (x, d) => (x == null ? null : +x.toFixed(d));
+  function recordDebug(kind, extra) {
+    const s = song() || {};
+    let track = null;
+    try { track = micStream ? micStream.getAudioTracks()[0].getSettings() : null; } catch (e) {}
+    const log = {
+      app: 'utascore-debug', version: 1, kind, date: new Date().toISOString(),
+      videoId: currentId, title: s.title || '',
+      settings: Object.assign({}, settings),
+      guide: { source: s.guideSource || '', offset: s.offset || 0, transpose: s.transpose || 0, notes: s.guide || null },
+      // 列ごとの配列で保存（t: 曲の秒・遅延補正後, midi: 検出音程, rms: 音量）
+      frames: { count: frames.length, t: frames.map((f) => r2(f.t, 3)), midi: frames.map((f) => r2(f.midi, 2)), rms: frames.map((f) => r2(f.rms, 4)) },
+      env: {
+        userAgent: navigator.userAgent, platform: navigator.platform || '', language: navigator.language,
+        viewport: window.innerWidth + 'x' + window.innerHeight, dpr: window.devicePixelRatio,
+        sampleRate: audioCtx ? audioCtx.sampleRate : null, baseLatency: audioCtx && audioCtx.baseLatency != null ? audioCtx.baseLatency : null,
+        outputLatency: audioCtx && audioCtx.outputLatency != null ? audioCtx.outputLatency : null,
+        micTrackSettings: track, playbackRate: player && player.getPlaybackRate ? player.getPlaybackRate() : null,
+      },
+    };
+    if (extra.result) {
+      const r = extra.result;
+      log.result = { total: r.total, raw: r.raw, hasGuide: r.hasGuide, participation: r.participation, voicedSec: r.voicedSec, key: r.key || null,
+        timingBias: r.timingBias == null ? null : r.timingBias, stats: r.stats, comments: r.comments,
+        items: Object.fromEntries(Object.entries(r.items).map(([k, v]) => [k, { value: v.value, extra: v.extra || null }])),
+        notes: (r.notes || []).map((n) => ({ t: r2(n.t, 3), d: r2(n.d, 3), midi: n.midi, credit: r2(n.credit, 3), hit: n.hit })) };
+    }
+    if (extra.guideNotes) log.guideNotesCreated = extra.guideNotes;
+    const list = loadJSON(DEBUG_KEY, []);
+    list.unshift(log);
+    // 容量オーバーなら古いものから減らす
+    for (let n = Math.min(list.length, DEBUG_MAX); n >= 1; n--) { if (saveJSON(DEBUG_KEY, list.slice(0, n))) break; }
+    renderDebugList();
+    return log;
+  }
+  function downloadDebug(log) {
+    if (!log) return;
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(new Blob([JSON.stringify(log)], { type: 'application/json' }));
+    a.download = 'utascore-debug-' + log.date.replace(/[:.]/g, '-').slice(0, 19) + '-' + log.kind + '.json';
+    a.click(); setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+  }
+  function renderDebugList() {
+    const box = $('debugList'), list = loadJSON(DEBUG_KEY, []);
+    if (!list.length) { box.textContent = 'まだ記録がありません。'; return; }
+    box.innerHTML = '';
+    list.forEach((log) => {
+      const row = document.createElement('div'); row.className = 'row'; row.style.marginBottom = '6px';
+      const d = new Date(log.date);
+      const label = document.createElement('span'); label.className = 'grow';
+      label.textContent = d.toLocaleString('ja-JP', { month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit', second: '2-digit' }) + '　' +
+        (log.kind === 'sing' ? '採点 ' + (log.result ? log.result.total.toFixed(3) + '点' : '') : 'お手本録り') + '　' + (log.title || log.videoId || '') + '（' + log.frames.count + 'フレーム）';
+      const b = document.createElement('button'); b.textContent = '書き出し'; b.onclick = () => downloadDebug(log);
+      row.append(label, b); box.appendChild(row);
+    });
+  }
+  $('debugSaveBtn').onclick = () => downloadDebug(lastDebug);
+  $('debugClearBtn').onclick = () => { try { localStorage.removeItem(DEBUG_KEY); } catch (e) {} renderDebugList(); };
+  renderDebugList();
+
   $('closeResBtn').onclick = () => $('resultModal').classList.remove('show');
   $('againBtn').onclick = () => { $('resultModal').classList.remove('show'); begin('sing'); };
 
