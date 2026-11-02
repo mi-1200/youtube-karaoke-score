@@ -803,15 +803,38 @@
   /* ---------- 動画の音程バー（画面）の読み取り ---------- */
   // ピンクの音程バー・現在位置の縦線を想定（例: ガイドメロ付きカラオケ動画）
   function isBarPink(r, g, b) { return r > 190 && g < 150 && b > 110 && r - g > 80; }
+  // 黄色（金色）のバー・縦線の動画もある
+  function isBarGold(r, g, b) { return r > 190 && g > 150 && g < 240 && b < 130 && r - b > 100 && r >= g; }
+  const BAR_TESTS = { pink: isBarPink, gold: isBarGold };
+  function barTest(layout) { return BAR_TESTS[(layout && layout.color) || 'pink'] || isBarPink; }
   // img: {data, width, height}（RGBA）, rect: 動画の範囲 {x,y,w,h}（img の画素座標）
   // 縦線（現在位置）と音程バーの帯を探す。見つからなければ null
   function isLight(r, g, b) { const mn = Math.min(r, g, b), mx = Math.max(r, g, b); return mn > 135 && mx - mn < 45; }
   function findBarLayout(img, rect) {
     // まずピンクの縦線を探し、無ければ（曲間などで線が白い時）明るい縦線を探す
-    return findBarLayoutBy(img, rect, isBarPink, 0.08) || findBarLayoutBy(img, rect, (r, g, b) => isBarPink(r, g, b) || isLight(r, g, b), 0.15);
+    for (const color of Object.keys(BAR_TESTS)) {
+      const L = findBarLayoutBy(img, rect, BAR_TESTS[color], 0.08, color);
+      if (L) return L;
+    }
+    for (const color of Object.keys(BAR_TESTS)) {
+      const T = BAR_TESTS[color];
+      const L = findBarLayoutBy(img, rect, (r, g, b) => T(r, g, b) || isLight(r, g, b), 0.15, color);
+      if (L && countBarPixels(img, rect, L) > 0) return L;
+    }
+    return null;
   }
-  function findBarLayoutBy(img, rect, test, minRun) {
+  // 縦線より右の帯にあるバーの色の画素数（縦線が白い時に、バーの色を決めるため）
+  function countBarPixels(img, rect, L) {
+    const { data, width } = img, T = barTest(L);
+    let n = 0;
+    for (let y = L.top; y <= L.bottom; y += 2) for (let x = L.lineRight + 3; x < Math.min(width, rect.x + rect.w); x += 3) {
+      const i = (y * width + x) * 4; if (T(data[i], data[i + 1], data[i + 2])) n++;
+    }
+    return n;
+  }
+  function findBarLayoutBy(img, rect, test, minRun, color) {
     const { data, width } = img;
+    const skipT = BAR_TESTS[color || 'pink'];
     const x0 = Math.round(rect.x + rect.w * 0.12), x1 = Math.round(rect.x + rect.w * 0.6);
     const y0 = Math.round(rect.y), y1 = Math.round(rect.y + rect.h * 0.45);
     let best = { run: 0 };
@@ -843,7 +866,7 @@
       let s = 0, n = 0;
       for (let x = xa; x < xb; x += 2) {
         const i = (y * width + x) * 4;
-        if (isBarPink(data[i], data[i + 1], data[i + 2])) continue;
+        if (skipT(data[i], data[i + 1], data[i + 2])) continue;
         s += data[i] + data[i + 1] + data[i + 2]; n++;
       }
       rows.push(n ? s / n : 0);
@@ -866,17 +889,17 @@
       }
     }
     if (!step || step < 1.5) step = (bottom - top) / 25.6;
-    return { lineLeft, lineRight, top, bottom, step };
+    return { lineLeft, lineRight, top, bottom, step, color: color || 'pink' };
   }
   // 現在位置のすぐ右にあるバーの高さを読む。戻り値: 帯の下端からの半音数（相対）または null（休符）
   function readBarPitch(img, rect, layout) {
-    const { data, width } = img;
+    const { data, width } = img, T = barTest(layout);
     const xa = Math.round(layout.lineRight + Math.max(2, rect.w * 0.003)), xb = Math.round(layout.lineRight + rect.w * 0.014);
     for (let x = xa; x <= xb; x++) {
       const ys = [];
       for (let y = layout.top; y <= layout.bottom; y++) {
         const i = (y * width + x) * 4;
-        if (isBarPink(data[i], data[i + 1], data[i + 2])) ys.push(y);
+        if (T(data[i], data[i + 1], data[i + 2])) ys.push(y);
       }
       if (ys.length >= 2 && ys.length < (layout.bottom - layout.top) * 0.5) {
         const y = median(ys);
@@ -888,7 +911,7 @@
   // 現在位置より右に見えているバーを全部読む（短いバーも1本ずつ拾うため）。
   // 戻り値: [{x0, x1, rel, clipL, clipR}]（x は画素、rel は帯の下端からの半音数。clipL/R は端で切れているか）
   function readBarSegments(img, rect, layout) {
-    const { data, width } = img;
+    const { data, width } = img, T = barTest(layout);
     const xa = Math.round(layout.lineRight + Math.max(2, rect.w * 0.003));
     const xb = Math.min(width - 1, Math.round(rect.x + rect.w * 0.995));
     const band = layout.bottom - layout.top, tolY = Math.max(1.5, layout.step * 0.6);
@@ -906,7 +929,7 @@
       let n = 0, lo = -1, hi = -1;
       for (let y = layout.top; y <= layout.bottom; y++) {
         const i = (y * width + x) * 4;
-        if (isBarPink(data[i], data[i + 1], data[i + 2])) { n++; if (lo < 0) lo = y; hi = y; }
+        if (T(data[i], data[i + 1], data[i + 2])) { n++; if (lo < 0) lo = y; hi = y; }
       }
       const ok = n >= 2 && n < band * 0.5;
       const yc = ok ? (lo + hi) / 2 : null;

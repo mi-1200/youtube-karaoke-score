@@ -632,3 +632,20 @@ test('readBarSegments / estimateScrollSpeed / accumulateBarNotes: recovers short
   });
   function median(a) { const s = a.slice().sort((x, y) => x - y); return s[s.length >> 1]; }
 });
+
+test('findBarLayout / readBarSegments: yellow (gold) bars and line over a red background', () => {
+  const w = 960, h = 130, top = 12, bottom = 112, step = 4, lineX = 300;
+  const data = new Uint8ClampedArray(w * h * 4);
+  const set = (x, y, c) => { const i = (y * w + x) * 4; data[i] = c[0]; data[i + 1] = c[1]; data[i + 2] = c[2]; data[i + 3] = 255; };
+  for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) set(x, y, [160, 65, 50]); // 赤い幕
+  for (let k = 2; k < 25; k += 2) for (let x = 0; x < w; x++) set(x, bottom - k * step, [175, 175, 175]);
+  for (let y = top; y <= bottom; y++) for (let x = lineX - 1; x <= lineX + 1; x++) set(x, y, [229, 195, 54]);
+  const bars = [[lineX + 2, lineX + 60, 10], [lineX + 64, lineX + 72, 8], [lineX + 76, lineX + 84, 8], [lineX + 90, lineX + 200, 12]];
+  for (const [a, b, r] of bars) for (let x = a; x <= b; x++) for (let dy = -2; dy <= 2; dy++) set(x, bottom - r * step + dy, [255, 207, 0]);
+  const img = { data, width: w, height: h }, rect = { x: 0, y: 0, w, h: 540 };
+  const L = K.findBarLayout(img, rect);
+  assert.ok(L && L.color === 'gold' && Math.abs(L.lineLeft - lineX) <= 2, JSON.stringify(L));
+  const segs = K.readBarSegments(img, rect, L);
+  assert.deepEqual(segs.map((s) => Math.round(s.rel)), [10, 8, 8, 12], JSON.stringify(segs));
+  assert.ok(Math.abs(K.readBarPitch(img, rect, L).rel - 10) < 0.6);
+});

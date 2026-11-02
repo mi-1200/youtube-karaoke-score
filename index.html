@@ -737,8 +737,11 @@ td, th { border-bottom: 1px solid var(--line); padding: 6px 4px; text-align: lef
     updateOffset(true);
     if (screen.offset == null) return null;
     const bars = K.barNotesToGuide(screen.barAcc, screen.offset);
-    if (bars.length >= 5) return bars;
-    return K.framesToNotes(screen.frames.filter((f) => f.rel != null).map((f) => ({ t: f.t, midi: f.rel + screen.offset })), { minDur: 0.08 });
+    const old = K.framesToNotes(screen.frames.filter((f) => f.rel != null).map((f) => ({ t: f.t, midi: f.rel + screen.offset })), { minDur: 0.08 });
+    if (bars.length < 5) return old;
+    // 1本ずつ読めなかった所（読み始めなど）は、現在位置で読んだ音で埋める
+    const covered = (n) => bars.some((b) => b.t - 0.1 < n.t + n.d && n.t < b.t + b.d + 0.1);
+    return bars.concat(old.filter((n) => !covered(n))).sort((a, b) => a.t - b.t);
   }
   function screenDebug() {
     if (!screen) return null;
