@@ -149,7 +149,7 @@ td, th { border-bottom: 1px solid var(--line); padding: 6px 4px; text-align: lef
     <select id="trackSelect" class="grow"></select>
     <button id="useTrackBtn">このトラックを使う</button>
   </div>
-  <p class="muted"><span class="exp" style="margin-left:0">実験的・個人利用向け</span> 「動画の音から作る」は、ガイドメロディ入りのカラオケ動画向けです（PCのChrome/Edgeのみ）。共有の画面で<b>このタブ</b>を選び、<b>「タブの音声も共有する」をオン</b>にしてください。動画を最初から最後まで再生して、鳴っているメロディの音程を拾います。音はその場で音程の数字にするだけで、録音・保存・送信はしません。作ったガイドはこの端末の中だけで使うもので、書き出しには含めません。精度は動画の音作り次第なので、ずれた部分は「開始のずれ」で調整してください。</p>
+  <p class="muted" id="tabGuideHelp"><span class="exp" style="margin-left:0">実験的・個人利用向け</span> 「動画の音から作る」は、ガイドメロディ入りのカラオケ動画向けです（PCのChrome/Edgeのみ）。共有の画面で<b>このタブ</b>を選び、<b>「タブの音声も共有する」をオン</b>にしてください。動画を最初から最後まで再生して、鳴っているメロディの音程を拾います。音はその場で音程の数字にするだけで、録音・保存・送信はしません。作ったガイドはこの端末の中だけで使うもので、書き出しには含めません。精度は動画の音作り次第なので、ずれた部分は「開始のずれ」で調整してください。</p>
   <p class="muted">「お手本を録る」は、動画を最初から再生しながらマイクで一度歌う（または原曲を近くで流す）と、その音程をガイドとして保存します。</p>
   <h3>動画の音程バーでリアルタイム判定（PC）<span class="exp">実験的・個人利用向け</span></h3>
   <p class="muted">音程バー付きのカラオケ動画なら、画面のバーを読み取って、歌いながら音程が合っているかを判定できます（PCのChrome/Edgeのみ）。押したら共有の画面で<b>このタブ</b>を選び、<b>「タブの音声も共有する」もオン</b>にしてください（ガイドメロの音で高さを自動で合わせます）。動画はなるべく大きく表示してください。歌い終わると、読み取ったバーをこの曲のガイドとして保存するので、次からはスマホでもガイドあり採点ができます。画面と音はこの端末の中で読み取るだけで、録画・録音・送信はしません。保存するのはバーの高さと時刻の数字だけで、書き出しには含めません（バーは動画の制作者さんの作品なので、自分で楽しむ範囲で使ってください）。</p>
@@ -482,6 +482,10 @@ td, th { border-bottom: 1px solid var(--line); padding: 6px 4px; text-align: lef
   }
   $('singBtn').onclick = () => begin('sing');
   $('recGuideBtn').onclick = () => begin('guide');
+  // 機能の表示切り替え（false で画面から隠す。コードは残す）。テスト用に ?features=tabAudioGuide で一時的に表示できる
+  const FEATURES = { tabAudioGuide: false };
+  (new URLSearchParams(location.search).get('features') || '').split(',').forEach((f) => { if (f in FEATURES) FEATURES[f] = true; });
+  if (!FEATURES.tabAudioGuide) { $('tabGuideBtn').hidden = true; $('tabGuideHelp').hidden = true; }
   $('tabGuideBtn').onclick = async () => { if (await confirmExperimental('tab')) begin('tabguide'); };
 
   /* ---------- 実験的な機能の初回確認 ---------- */

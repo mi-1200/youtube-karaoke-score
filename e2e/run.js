@@ -45,6 +45,7 @@ function makeMidi() {
   check('footer has privacy and YouTube terms links', await page.evaluate(() => !!document.querySelector('.appfoot a[href="privacy.html"]') && !!document.querySelector('.appfoot a[href="https://www.youtube.com/t/terms"]')));
   await page.click('#consentOkBtn');
   check('consent modal closed', !(await page.isVisible('#consentModal')));
+  check('tab-audio guide hidden by default', !(await page.isVisible('#tabGuideBtn')) && (await page.isVisible('#screenBarBtn')));
   await page.fill('#urlInput', 'https://www.youtube.com/watch?v=dQw4w9WgXcQ');
   await page.click('#loadBtn');
   await page.waitForFunction(() => !document.getElementById('singBtn').disabled, null, { timeout: 5000 });
