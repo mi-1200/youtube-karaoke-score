@@ -812,11 +812,74 @@
   function isBarOrange(r, g, b) { return r > 180 && g >= 70 && g <= 145 && b < 70 && r - g > 80; }
   const BAR_TESTS = { pink: isBarPink, gold: isBarGold, dark: isBarDark, orange: isBarOrange };
   const LINE_TESTS = { pink: isBarPink, gold: isBarGold, dark: isLineCrimson, orange: isBarOrange };
-  function barTest(layout) { return BAR_TESTS[(layout && layout.color) || 'pink'] || isBarPink; }
-  // img: {data, width, height}（RGBA）, rect: 動画の範囲 {x,y,w,h}（img の画素座標）
-  // 縦線（現在位置）と音程バーの帯を探す。見つからなければ null
-  function isLight(r, g, b) { const mn = Math.min(r, g, b), mx = Math.max(r, g, b); return mn > 135 && mx - mn < 45; }
-  function findBarLayout(img, rect) {
+  function colorDist(r, g, b, c) { const dr = r - c[0], dg = g - c[1], db = b - c[2]; return Math.sqrt(dr * dr + dg * dg + db * db); }
+  function nearColor(c, tol) { return (r, g, b) => colorDist(r, g, b, c) < tol; }
+  function barTest(layout) {
+    if (layout && layout.color === 'auto' && layout.auto) return hueTest(layout.auto);
+    return BAR_TESTS[(layout && layout.color) || 'pink'] || isBarPink;
+  }
+  // 色の決まっていない動画：縦線（細くて縦に長い、色の付いた線）を探し、その右で
+  // 縦線に近い色合いの「横に平らな」画素の一番多い色合いを、バーの色として覚える
+  function hsv(r, g, b) {
+    const mx = Math.max(r, g, b), mn = Math.min(r, g, b), c = mx - mn;
+    let h = 0;
+    if (c) h = mx === r ? ((g - b) / c) % 6 : mx === g ? (b - r) / c + 2 : (r - g) / c + 4;
+    return [(h * 60 + 360) % 360, mx ? c / mx : 0, mx];
+  }
+  function hueDiff(a, b) { const d = Math.abs(a - b) % 360; return d > 180 ? 360 - d : d; }
+  function hueTest(st) { return (r, g, b) => { const [h, sat, v] = hsv(r, g, b); return sat >= 0.45 && v >= st.minV && hueDiff(h, st.hue) <= 18; }; }
+  function learnAutoStyle(img, rect) {
+    const { data, width, height } = img;
+    const px = (x, y) => { const i = (y * width + x) * 4; return [data[i], data[i + 1], data[i + 2]]; };
+    const d = (a, b) => Math.sqrt((a[0] - b[0]) ** 2 + (a[1] - b[1]) ** 2 + (a[2] - b[2]) ** 2);
+    const x0 = Math.round(rect.x + rect.w * 0.1), x1 = Math.min(width - 5, Math.round(rect.x + rect.w * 0.9));
+    const y0 = Math.max(0, Math.round(rect.y)), y1 = Math.min(height - 1, Math.round(rect.y + rect.h * 0.45));
+    let best = { run: 0 };
+    const maxGap = Math.max(3, Math.round(rect.h * 0.035)); // バーが縦線に重なる所は途切れる
+    for (let x = Math.max(6, x0); x <= Math.min(x1, width - 7); x++) {
+      let run = 0, gap = 0, start = -1, prevH = null, hs = [];
+      for (let y = y0; y < y1; y++) {
+        const c = px(x, y), [h, sat, v] = hsv(c[0], c[1], c[2]);
+        const dl = Math.max(d(c, px(x - 4, y)), d(c, px(x - 6, y))), dr = Math.max(d(c, px(x + 4, y)), d(c, px(x + 6, y)));
+        const ok = sat >= 0.5 && v >= 120 && Math.max(dl, dr) > 45 && Math.min(dl, dr) > 20 && (prevH == null || hueDiff(h, prevH) < 20);
+        if (ok) {
+          if (run === 0) { start = y; hs = []; }
+          run += 1 + gap; gap = 0; prevH = h; hs.push(h);
+          if (run > best.run) best = { run, x, top: start, bottom: y, hue: median(hs) };
+        } else if (run > 0 && gap < maxGap) gap++;
+        else { run = 0; gap = 0; prevH = null; }
+      }
+    }
+    if (best.run < rect.h * 0.1) return null;
+    // バーの色合い：縦線の色合い±30°の中で、横に平らな明るい画素が一番多い色合い
+    const reach = Math.max(5, Math.round((best.bottom - best.top) / 6));
+    const bins = new Array(36).fill(0), sums = new Array(36).fill(0), vmax = new Array(36).fill(0);
+    for (let y = best.top; y <= best.bottom; y++) {
+      for (let x = best.x + 6; x < Math.min(width - 4, rect.x + rect.w - 4); x += 2) {
+        const c = px(x, y), [h, sat, v] = hsv(c[0], c[1], c[2]);
+        if (sat < 0.45 || v < 120 || hueDiff(h, best.hue) > 30) continue;
+        if (d(c, px(x - 3, y)) > 25 || d(c, px(x + 3, y)) > 25) continue;
+        // バーは太さが限られる：上下どちらも少し離れると別の色になる（幕などの広い面を除く）
+        let up = false, dn = false;
+        for (let k2 = 3; k2 <= reach && !(up && dn); k2++) {
+          if (!up && y - k2 >= 0 && d(c, px(x, y - k2)) > 60) up = true;
+          if (!dn && y + k2 < height && d(c, px(x, y + k2)) > 60) dn = true;
+        }
+        if (!up || !dn) continue;
+        const k = Math.floor(h / 10) % 36; bins[k]++; sums[k] += hueDiff(h, k * 10 + 5) * (h >= k * 10 + 5 ? 1 : -1) + k * 10 + 5; vmax[k] = Math.max(vmax[k], v);
+      }
+    }
+    let bk = -1;
+    for (let k = 0; k < 36; k++) if (bins[k] && (bk < 0 || bins[k] + (bins[(k + 35) % 36] + bins[(k + 1) % 36]) * 0.5 > bins[bk] + (bins[(bk + 35) % 36] + bins[(bk + 1) % 36]) * 0.5)) bk = k;
+    if (bk < 0 || bins[bk] < 15) return null;
+    // 隣のビンも合わせて平均の色合い
+    let sw = 0, sh = 0, vm = 0;
+    for (const k of [(bk + 35) % 36, bk, (bk + 1) % 36]) { if (!bins[k]) continue; const mean = sums[k] / bins[k]; sw += bins[k]; sh += bins[k] * (hueDiff(mean, bk * 10 + 5) * (((mean - (bk * 10 + 5) + 540) % 360) - 180 >= 0 ? 1 : -1)); vm = Math.max(vm, vmax[k]); }
+    const hue = (bk * 10 + 5 + sh / sw + 360) % 360;
+    return { lineHue: best.hue, hue, minV: Math.round(vm * 0.75) };
+  }
+  function findBarLayout(img, rect, opts) {
+    opts = opts || {};
     // 動画の種類（縦線とバーの色）ごとに縦線を探し、縦線の右にそのバーの色が一番多いものを選ぶ。
     // 見つからなければ（曲間などで線が白い時）明るい縦線を探す
     const pick = (minRun, light) => {
@@ -830,7 +893,17 @@
       }
       return best;
     };
-    return pick(0.08, false) || pick(0.15, true);
+    const known = opts.forceAuto ? null : pick(0.08, false);
+    if (known && countBarPixels(img, rect, known) >= 30) return known;
+    // 知っている色で見つからなければ、この動画の色を覚えて探す
+    const auto = learnAutoStyle(img, rect);
+    if (auto) {
+      const lineT = hueTest({ hue: auto.lineHue, minV: 120 });
+      const L = findBarLayoutBy(img, rect, (r, g, b) => { const [h, sat, v] = hsv(r, g, b); return sat >= 0.5 && v >= 120 && hueDiff(h, auto.lineHue) <= 20; }, 0.08, 'auto', hueTest(auto));
+      if (L) { L.auto = { hue: Math.round(auto.hue), minV: auto.minV }; if (countBarPixels(img, rect, L) > 0) return L; }
+    }
+    if (opts.forceAuto) return null;
+    return known || pick(0.15, true);
   }
   // 縦線より右の帯にあるバーの色の画素数（縦線が白い時に、バーの色を決めるため）
   function countBarPixels(img, rect, L) {
@@ -861,9 +934,9 @@
     const per = den < 0 ? bp + 0.5 * (a - c) / den : bp;
     return per / 2;
   }
-  function findBarLayoutBy(img, rect, test, minRun, color) {
+  function findBarLayoutBy(img, rect, test, minRun, color, barT) {
     const { data, width } = img;
-    const skipT = BAR_TESTS[color || 'pink'];
+    const skipT = barT || BAR_TESTS[color || 'pink'];
     const x0 = Math.round(rect.x + rect.w * 0.1), x1 = Math.round(rect.x + rect.w * 0.9);
     const y0 = Math.round(rect.y), y1 = Math.round(rect.y + rect.h * 0.45);
     let best = { run: 0 };
@@ -1233,7 +1306,7 @@
   const api = {
     NOTE_NAMES, TOLERANCE, clamp, freqToMidi, midiToFreq, midiName, parseVideoId, detectPitch,
     parseLrc, formatStamp, parseMidi, toMonophonic, framesToNotes, findNote, foldDiff,
-    pitchCredit, scorePerformance, detectTechniques, techniqueBonus, detectMelody, findBarLayout, readBarPitch, estimateBarOffset, estimateBarAlignment, singingSections, inSections, maskFrames, judgeChunks, pitchTimeline, readBarSegments, estimateScrollSpeed, accumulateBarNotes, barNotesToGuide,
+    pitchCredit, scorePerformance, detectTechniques, techniqueBonus, detectMelody, findBarLayout, learnAutoStyle, readBarPitch, estimateBarOffset, estimateBarAlignment, singingSections, inSections, maskFrames, judgeChunks, pitchTimeline, readBarSegments, estimateScrollSpeed, accumulateBarNotes, barNotesToGuide,
   };
   if (typeof module !== 'undefined' && module.exports) module.exports = api;
   else root.KaraCore = api;

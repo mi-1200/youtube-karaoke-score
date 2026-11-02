@@ -703,3 +703,18 @@ test('findBarLayout: orange bars and line', () => {
   assert.ok(L && L.color === 'orange' && Math.abs(L.lineLeft - lineX) <= 2, JSON.stringify(L));
   assert.deepEqual(K.readBarSegments(img, rect, L).map((s) => Math.round(s.rel)), [7, 7, 9]);
 });
+
+test('findBarLayout: learns an unknown bar color (green) by itself', () => {
+  const w = 960, h = 130, top = 10, bottom = 110, step = 4, lineX = 600;
+  const data = new Uint8ClampedArray(w * h * 4);
+  const set = (x, y, c) => { const i = (y * w + x) * 4; data[i] = c[0]; data[i + 1] = c[1]; data[i + 2] = c[2]; data[i + 3] = 255; };
+  for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) set(x, y, [60, 50, 80]);
+  for (let k = 2; k < 25; k += 2) for (let x = 0; x < w; x++) set(x, bottom - k * step, [170, 170, 170]);
+  for (let x = 0; x < w; x += 120) for (let y = top; y <= bottom; y++) set(x, y, [150, 150, 150]); // 小節線（灰色）
+  for (let y = top; y <= bottom; y++) for (let x = lineX - 1; x <= lineX + 1; x++) set(x, y, [40, 200, 90]);
+  [[lineX + 3, lineX + 12, 6], [lineX + 16, lineX + 60, 8], [lineX + 64, lineX + 150, 5]].forEach(([a, b, r]) => { for (let x = a; x <= b; x++) for (let dy = -2; dy <= 2; dy++) set(x, bottom - r * step + dy, [60, 230, 120]); });
+  const img = { data, width: w, height: h }, rect = { x: 0, y: 0, w, h: 540 };
+  const L = K.findBarLayout(img, rect);
+  assert.ok(L && L.color === 'auto' && Math.abs(L.lineLeft - lineX) <= 2, JSON.stringify(L));
+  assert.deepEqual(K.readBarSegments(img, rect, L).map((s) => Math.round(s.rel)), [6, 8, 5]);
+});
