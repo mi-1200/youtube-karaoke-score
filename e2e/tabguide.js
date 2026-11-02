@@ -14,6 +14,7 @@ const check = (n, ok, info) => { console.log((ok ? 'PASS ' : 'FAIL ') + n + (inf
   const errors = [];
   page.on('pageerror', (e) => errors.push(e.message));
   await page.goto(BASE);
+  await page.click('#consentOkBtn');
   check('version label', /^うたスコア v\d+\.\d+\.\d+/.test(await page.textContent('#verLabel')), await page.textContent('#verLabel'));
   await page.click('#changelogBtn');
   check('changelog modal lists versions', (await page.$$('#changelogBody .cl-ver')).length >= 3);
@@ -35,6 +36,7 @@ const check = (n, ok, info) => { console.log((ok ? 'PASS ' : 'FAIL ') + n + (inf
     };
   });
   await page.click('#tabGuideBtn');
+  await page.click('#expOkBtn');
   await page.waitForTimeout(1000);
   const ml = await page.textContent('#modeLine');
   if (!ml.includes('動画の音から')) { check('tab capture started', false, ml); }
