@@ -105,6 +105,7 @@ function makeMidi() {
   await page.click('#stopBtn');
   await page.waitForSelector('#resultModal.show');
   check('guide result mode', (await page.textContent('#resMode')).includes('ガイドメロディ採点'), await page.textContent('#resMode'));
+  check('technique row in result', /しゃくり \d+回/.test(await page.textContent('#resItems')) && /テクニック加点/.test(await page.textContent('#resItems')), await page.textContent('#resItems'));
   check('hit count line', /音程バー的中：\d+ \/ \d+/.test(await page.textContent('#resItems')), await page.textContent('#resItems'));
   await page.screenshot({ path: path.join(SHOTS, 'desktop-result-guide.png') });
   {

@@ -75,6 +75,9 @@ td, th { border-bottom: 1px solid var(--line); padding: 6px 4px; text-align: lef
 #radar { display: block; margin: 0 auto; width: 260px; height: 230px; }
 .comments { background: var(--panel2); border-radius: 10px; padding: 10px 14px; font-size: 14px; line-height: 1.6; }
 .songsel { margin-top: 8px; }
+.techrow { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 6px; }
+.tech { background: var(--panel2); border: 1px solid var(--line); border-radius: 999px; padding: 3px 10px; font-size: 13px; }
+.tech.bonus { border-color: var(--gold); color: var(--gold); }
 .appfoot { margin-top: 24px; text-align: center; color: var(--muted); font-size: 13px; }
 .appfoot a, .linkbtn { color: var(--accent2); }
 .linkbtn { background: none; border: none; padding: 0; text-decoration: underline; font-size: 13px; }
@@ -405,13 +408,23 @@ td, th { border-bottom: 1px solid var(--line); padding: 6px 4px; text-align: lef
           }
         }
       }
-      const res = K.scorePerformance(frames, guideForScore, {});
+      let scoreFrames = frames;
+      if (screen && guideForScore && screen.offsetSrc === '歌声' && screen.shift) {
+        scoreFrames = frames.map((f) => ({ ...f, t: f.t + screen.shift }));
+        // 遅延補正の過不足が分かったので、次回のために設定を直す
+        if (screen.fit >= 0.4) {
+          settings.latency = K.clamp(Math.round(settings.latency - screen.shift * 1000), 0, 600);
+          saveJSON(SETTINGS_KEY, settings); $('latencyInput').value = settings.latency;
+          screenNote = (screenNote ? screenNote + '。' : '') + '遅延補正を ' + settings.latency + 'ms に自動調整しました';
+        }
+      }
+      const res = K.scorePerformance(scoreFrames, guideForScore, {});
       lastDebug = recordDebug('sing', { result: res, screen: screenDebug() });
       showResult(res);
       if (screenNote) alertLine(screenNote);
       if (res.voicedSec >= 3) {
         s.history = s.history || [];
-        s.history.unshift({ date: new Date().toISOString(), total: +res.total.toFixed(3), guide: res.hasGuide, items: Object.fromEntries(Object.entries(res.items).map(([k, v]) => [k, Math.round(v.value)])) });
+        s.history.unshift({ date: new Date().toISOString(), total: +res.total.toFixed(3), guide: res.hasGuide, techniques: res.techniques ? res.techniques.counts : null, bonus: res.bonus || 0, items: Object.fromEntries(Object.entries(res.items).map(([k, v]) => [k, Math.round(v.value)])) });
         s.history = s.history.slice(0, 50);
         persist(); renderHistory();
       }
@@ -473,6 +486,8 @@ td, th { border-bottom: 1px solid var(--line); padding: 6px 4px; text-align: lef
   /* ---------- 画面の音程バー（タブの映像を読む） ---------- */
   let screen = null;
   function curGuide() { return screen && screen.offset != null ? screen.notes : effGuide; }
+  // 歌声の時刻に足して、ガイドの時刻と比べるためのずれ（画面バーを歌声で合わせたときだけ）
+  function userShift() { return screen && screen.offset != null ? screen.shift || 0 : 0; }
   async function startScreen() {
     if (!navigator.mediaDevices || !navigator.mediaDevices.getDisplayMedia) { alertLine('このブラウザでは画面を読み取れません。PCのChromeかEdgeで開いてください'); return; }
     let stream;
@@ -567,15 +582,26 @@ td, th { border-bottom: 1px solid var(--line); padding: 6px 4px; text-align: lef
       screen.userPairs.push({ rel: screen.rel, midi: userFrame.midi }); if (screen.userPairs.length > 3000) screen.userPairs.shift();
     }
     if (mode === 'sing') screen.frames.push({ t, rel: screen.rel });
-    if (now - screen.offsetAt > 1000) { screen.offsetAt = now; updateOffset(); }
+    if (now - screen.offsetAt > 1500) { screen.offsetAt = now; updateOffset(); }
     if (screen.offset != null && screen.rel != null && mode === 'sing') addScreenNote(t, Math.round(screen.rel + screen.offset));
   }
-  function updateOffset() {
-    const src = screen.pairs.length >= 40 ? screen.pairs : screen.userPairs;
-    const est = K.estimateBarOffset(src.length >= 40 ? src : []);
+  // バーの高さ合わせ：動画のガイドメロの音と、歌声の両方で推定し、一致度が高い方を使う。
+  // 歌声で合わせた場合は、時間のずれ（遅延補正の過不足）も同時に推定する
+  function updateOffset(final) {
+    const aud = K.estimateBarOffset(screen.pairs.length >= 40 ? screen.pairs : []);
+    let usr = null;
+    if (mode === 'sing' || final) {
+      const tmin = final ? -1 : songTime() - 90; // 普段は直近90秒で計算（重さ対策）
+      usr = K.estimateBarAlignment(frames.filter((f) => f.t >= tmin), screen.frames.filter((f) => f.t >= tmin - 1));
+      if (usr && usr.pairs < 120) usr = null;
+    }
+    let est = null, src = '';
+    if (usr && (!aud || usr.fit >= aud.fit)) { est = usr; src = '歌声'; }
+    else if (aud) { est = { offset: aud.offset, fit: aud.fit, shift: 0 }; src = '動画のガイドメロ'; }
     if (!est) return;
     const changed = screen.offset == null || Math.abs(est.offset - screen.offset) > 0.3;
-    screen.offset = est.offset; screen.fit = est.fit; screen.offsetSrc = src === screen.pairs ? '動画のガイドメロ' : '歌声';
+    screen.offset = est.offset; screen.fit = est.fit; screen.offsetSrc = src; screen.shift = est.shift || 0;
+    screen.audFit = aud ? aud.fit : null; screen.usrFit = usr ? usr.fit : null;
     if (changed) { screen.notes = []; liveNotes = new Map(); screen.frames.forEach((f) => { if (f.rel != null) addScreenNote(f.t, Math.round(f.rel + screen.offset)); }); }
     updateScreenStatus();
   }
@@ -585,13 +611,14 @@ td, th { border-bottom: 1px solid var(--line); padding: 6px 4px; text-align: lef
     else N.push({ t, d: 0.03, midi: m });
   }
   function buildScreenGuide() {
-    updateOffset();
+    updateOffset(true);
     if (screen.offset == null) return null;
     return K.framesToNotes(screen.frames.filter((f) => f.rel != null).map((f) => ({ t: f.t, midi: f.rel + screen.offset })), { minDur: 0.08 });
   }
   function screenDebug() {
     if (!screen) return null;
     return { layout: screen.layout, useFull: screen.useFull, steps: screen.steps, offset: screen.offset, fit: screen.fit, offsetSrc: screen.offsetSrc || null,
+      shift: screen.shift || 0, audFit: screen.audFit, usrFit: screen.usrFit,
       pairs: screen.pairs.length, userPairs: screen.userPairs.length, video: [screen.video.videoWidth, screen.video.videoHeight],
       frames: { t: screen.frames.map((f) => +f.t.toFixed(3)), rel: screen.frames.map((f) => (f.rel == null ? null : +f.rel.toFixed(2))) } };
   }
@@ -607,6 +634,21 @@ td, th { border-bottom: 1px solid var(--line); padding: 6px 4px; text-align: lef
 
   /* ---------- メインループ ---------- */
   let liveSum = 0, liveN = 0;
+  // 歌っている最中のテクニック表示（直近3秒を0.4秒ごとに調べる）
+  let liveTech = [], liveTechAt = 0;
+  const TECH_LABEL = { shakuri: 'しゃくり', kobushi: 'こぶし', fall: 'フォール', vibrato: 'ビブラート' };
+  function updateLiveTech(t) {
+    const now = performance.now();
+    if (now - liveTechAt < 400) return;
+    liveTechAt = now;
+    const recent = frames.filter((f) => f.t > t - 3);
+    if (recent.length < 30) return;
+    const r = K.detectTechniques(recent);
+    for (const k of Object.keys(TECH_LABEL)) for (const e of r[k] || []) {
+      if (!liveTech.some((x) => x.kind === k && Math.abs(x.t - e.t) < 0.3)) liveTech.push({ kind: k, t: e.t, label: TECH_LABEL[k] });
+    }
+    liveTech = liveTech.filter((x) => x.t > t - 6);
+  }
   function tick() {
     const t = songTime();
     if (mode !== 'idle' && t < lastSongT - 1) {
@@ -638,7 +680,7 @@ td, th { border-bottom: 1px solid var(--line); padding: 6px 4px; text-align: lef
       if (trail.length > 600) trail.splice(0, trail.length - 600);
       if (mode !== 'idle') frames.push({ t: ft, midi, rms });
       if (mode === 'sing' && G.length) {
-        const idx = K.findNote(G, ft);
+        const idx = K.findNote(G, ft + userShift());
         if (idx >= 0) {
           const c = midi != null ? K.pitchCredit(Math.abs(K.foldDiff(midi, G[idx].midi))) : 0;
           const ln = liveNotes.get(idx) || { sum: 0, n: 0 };
@@ -647,6 +689,7 @@ td, th { border-bottom: 1px solid var(--line); padding: 6px 4px; text-align: lef
         }
       }
     }
+    if (mode === 'sing' && playing) updateLiveTech(ft); else if (mode !== 'sing') liveTech = [];
     if (mode === 'sing' && G.length && liveN) {
       $('liveAcc').textContent = '音程 ' + Math.round(100 * liveSum / liveN) + '%';
     } else if (mode !== 'sing') { $('liveAcc').textContent = ''; liveSum = 0; liveN = 0; }
@@ -702,22 +745,31 @@ td, th { border-bottom: 1px solid var(--line); padding: 6px 4px; text-align: lef
       ctx.fillStyle = col;
       roundRect(xa, Y(n.midi) - rowH / 2, Math.max(2, xb - xa - 1), rowH, rowH / 2);
     });
-    // 歌声の線
-    ctx.lineWidth = 3; ctx.lineCap = 'round';
-    let prev = null;
-    for (const f of trail) {
-      if (f.t < t - past || f.midi == null) { prev = null; continue; }
-      let m = f.midi, ok = null;
-      const gi = effGuide.length ? K.findNote(effGuide, f.t) : -1;
-      if (gi >= 0) { const d = K.foldDiff(m, effGuide[gi].midi); m = effGuide[gi].midi + d; ok = Math.abs(d) <= 0.6; }
-      else { while (m < viewLo) m += 12; while (m > viewHi) m -= 12; }
-      const x = X(f.t), y = Y(m);
-      if (prev && x - prev.x < 12) {
-        ctx.strokeStyle = ok === true ? '#4be08a' : ok === false ? '#ff9f4a' : '#5ad1ff';
-        ctx.beginPath(); ctx.moveTo(prev.x, prev.y); ctx.lineTo(x, y); ctx.stroke();
-      }
-      prev = { x, y };
+    // 歌声：細かい揺れをまとめて、カラオケのようなバーで表示する
+    const sh = userShift();
+    for (const b of voiceBars(trail.filter((f) => f.t >= t - past - 0.5))) {
+      const tm = (b.t0 + b.t1) / 2 + sh;
+      let m = b.midi, col = '#5ad1ff';
+      const gi = effGuide.length ? K.findNote(effGuide, tm) : -1;
+      if (gi >= 0) {
+        const d = K.foldDiff(b.midi, effGuide[gi].midi);
+        m = effGuide[gi].midi + Math.round(d);
+        col = Math.abs(d) <= 0.6 ? '#4be08a' : '#ff9f4a';
+      } else { while (m < viewLo) m += 12; while (m > viewHi) m -= 12; }
+      const xa = Math.max(0, X(b.t0 + sh)), xb = X(b.t1 + sh);
+      if (xb < 0) continue;
+      ctx.fillStyle = col;
+      roundRect(xa, Y(m) - rowH * 0.32, Math.max(3, xb - xa), rowH * 0.64, rowH * 0.32);
     }
+    // テクニックの表示
+    ctx.font = 'bold 12px sans-serif'; ctx.textAlign = 'center';
+    for (const e of liveTech) {
+      const x = X(e.t + sh);
+      if (x < 0 || x > W) continue;
+      ctx.fillStyle = e.kind === 'vibrato' ? '#c58bff' : e.kind === 'kobushi' ? '#ffd54a' : e.kind === 'fall' ? '#5ad1ff' : '#ff8ac6';
+      ctx.fillText(e.label, x, 14);
+    }
+    ctx.textAlign = 'left';
     // 現在位置
     ctx.strokeStyle = 'rgba(255,79,163,.9)'; ctx.lineWidth = 2;
     ctx.beginPath(); ctx.moveTo(x0, 0); ctx.lineTo(x0, H); ctx.stroke();
@@ -726,6 +778,27 @@ td, th { border-bottom: 1px solid var(--line); padding: 6px 4px; text-align: lef
       const msg = 'マイクをONにして再生すると、ここに歌声の音程が出ます';
       ctx.fillText(msg, W / 2, H / 2, W - 16); ctx.textAlign = 'left';
     }
+  }
+  // 歌声の音程を、半音単位のバーにまとめる（短い揺れは無視、0.6半音以上の変化が続いたら次のバー）
+  function voiceBars(fr) {
+    const bars = [];
+    let cur = null, pend = 0, prevT = -1;
+    const vals = [];
+    for (let i = 0; i < fr.length; i++) {
+      const f = fr[i];
+      if (f.midi == null || (prevT >= 0 && f.t - prevT > 0.09)) { if (cur) { bars.push(cur); cur = null; } vals.length = 0; if (f.midi == null) { prevT = -1; continue; } }
+      prevT = f.t;
+      vals.push(f.midi); if (vals.length > 5) vals.shift();
+      const sm = vals.slice().sort((a, b) => a - b)[vals.length >> 1];
+      if (!cur) { cur = { t0: f.t, t1: f.t, midi: Math.round(sm), sum: sm, n: 1 }; pend = 0; continue; }
+      if (Math.abs(sm - cur.midi) > 0.6) {
+        if (++pend >= 4) { bars.push(cur); cur = { t0: f.t, t1: f.t, midi: Math.round(sm), sum: sm, n: 1 }; pend = 0; continue; }
+      } else pend = 0;
+      cur.t1 = f.t; cur.sum += sm; cur.n++;
+      cur.midi = Math.round(cur.sum / cur.n);
+    }
+    if (cur) bars.push(cur);
+    return bars.filter((b) => b.t1 - b.t0 >= 0.06);
   }
   function roundRect(x, y, w, h, r) {
     r = Math.min(r, w / 2, h / 2);
@@ -875,6 +948,15 @@ td, th { border-bottom: 1px solid var(--line); padding: 6px 4px; text-align: lef
       const hit = res.notes.filter((n) => n.hit).length;
       const row = document.createElement('div'); row.className = 'muted';
       row.textContent = '音程バー的中：' + hit + ' / ' + res.notes.length + '　ビブラート ' + res.items.vibrato.extra + '　ロングトーン ' + res.items.longtone.extra;
+      box.appendChild(row);
+    }
+    if (res.techniques) {
+      const c = res.techniques.counts;
+      const row = document.createElement('div'); row.className = 'techrow';
+      [['しゃくり', c.shakuri], ['こぶし', c.kobushi], ['フォール', c.fall], ['ビブラート', c.vibrato]].forEach(([n, v]) => {
+        const b = document.createElement('span'); b.className = 'tech'; b.textContent = n + ' ' + v + '回'; row.appendChild(b);
+      });
+      const bo = document.createElement('span'); bo.className = 'tech bonus'; bo.textContent = 'テクニック加点 +' + (res.bonus || 0).toFixed(2); row.appendChild(bo);
       box.appendChild(row);
     }
     $('resComments').innerHTML = '';

@@ -262,18 +262,8 @@
   function foldDiff(sung, target) { const d = sung - target; return d - 12 * Math.round(d / 12); }
   function pitchCredit(absDiff) { return clamp(1 - (absDiff - 0.35) / 0.8, 0, 1); }
 
-  // frames: [{t, midi|null, rms}]（曲の時刻順）, guide: [{t,d,midi}] or null
-  function scorePerformance(frames, guide, opts) {
-    opts = opts || {};
-    const transpose = opts.transpose || 0;
-    const fr = frames.slice().sort((a, b) => a.t - b.t);
-    const voiced = fr.filter((f) => f.midi != null);
-    const res = { hasGuide: !!(guide && guide.length), items: {}, notes: [], comments: [] };
-    const totalTime = fr.length > 1 ? fr[fr.length - 1].t - fr[0].t : 0;
-    const dt = fr.length > 1 ? totalTime / (fr.length - 1) : 1 / 60;
-    res.voicedSec = voiced.length * dt;
-
-    // 連続した有声区間（ラン）
+  // 連続した有声区間（ラン）
+  function voicedRuns(voiced) {
     const runs = [];
     let run = [];
     for (const f of voiced) {
@@ -281,23 +271,43 @@
       run.push(f);
     }
     if (run.length) runs.push(run);
-
-    // 安定度：局所中央値（約0.25秒）からのずれ。音の切り替わりやビブラートは減点しない
+    return runs;
+  }
+  // 局所中央値（前後7フレーム）からのずれ。安定度とビブラート判定に使う
+  function detrendRuns(runs) {
     const detrended = [];
     for (const r of runs) {
       if (r.length < 6) continue;
       const det = [];
+      // 前後約0.12秒（フレームレートに依存しないよう時間で区切る）
+      let lo = 0, hi = 0;
       for (let i = 0; i < r.length; i++) {
+        while (r[lo].t < r[i].t - 0.12) lo++;
+        while (hi + 1 < r.length && r[hi + 1].t <= r[i].t + 0.12) hi++;
         const w = [];
-        for (let k = i - 7; k <= i + 7; k++) if (r[k]) w.push(r[k].midi);
+        for (let k = lo; k <= hi; k++) w.push(r[k].midi);
         const dev = r[i].midi - median(w);
         det.push({ t: r[i].t, dev, midi: r[i].midi, vib: false });
       }
       detrended.push(det);
     }
-
-    // ビブラート：0.5秒窓で 4〜8Hz、振幅 0.15〜1.3半音の揺れ
-    let vibratoSec = 0;
+    return detrended;
+  }
+  // ビブラート：0.5秒窓で 4〜8.5Hz、振幅 0.15〜1.3半音の揺れ。該当窓の det[k].vib を立てる
+  // 周期性：1周期ずらした自己相関が高い（ゆらぎ・ノイズをビブラートと誤認しない）
+  function periodic(det, i, j, lag) {
+    let best = -1;
+    for (let L = Math.max(2, Math.floor(lag) - 1); L <= Math.ceil(lag) + 1; L++) {
+      let sxy = 0, sxx = 0, syy = 0;
+      for (let k = i; k + L < j; k++) { const x = det[k].dev, y = det[k + L].dev; sxy += x * y; sxx += x * x; syy += y * y; }
+      if (sxx > 0 && syy > 0) best = Math.max(best, sxy / Math.sqrt(sxx * syy));
+    }
+    return best >= VIB_PERIODIC;
+  }
+  const VIB_PERIODIC = 0.5; // -Infinity で周期性チェックなし
+  function scanVibrato(detrended) {
+    let sec = 0;
+    const windows = [];
     for (const det of detrended) {
       for (let i = 0; i < det.length;) {
         const t0 = det[i].t;
@@ -310,14 +320,232 @@
         const span = det[j - 1].t - t0;
         if (span > 0.4) {
           const rate = cross / 2 / span, amp = (mx - mn) / 2;
-          if (rate >= 4 && rate <= 8.5 && amp >= 0.15 && amp <= 1.3) {
-            vibratoSec += span;
+          if (rate >= 4 && rate <= 8.5 && amp >= 0.15 && amp <= 1.3 && periodic(det, i, j, (j - i - 1) / span / rate)) {
+            sec += span;
+            windows.push({ t0, t1: det[j - 1].t });
             for (let k = i; k < j; k++) det[k].vib = true;
           }
         }
         i = j;
       }
     }
+    return { sec, windows };
+  }
+
+  /* ---------- 歌唱テクニック（しゃくり・こぶし・フォール・ビブラート） ---------- */
+  // 判定のしきい値（DAMなどの採点機の感覚に合わせた値）
+  const TECH = {
+    fps: 60,              // 内部で 60fps の格子に揃えてから判定する
+    bridge: 0.07,         // これ以下の途切れはつなぐ（秒）
+    stableWin: 0.15,      // 「音が落ち着いた」とみなす長さ（秒）
+    stableRange: 0.8,     // その間の上下幅（半音）
+    shakuriRise: 0.9,     // しゃくり：下から上がる幅（半音）
+    shakuriMin: 0.05, shakuriMax: 0.3, shakuriLook: 0.4,
+    kobushiRise: 0.7,     // こぶし：保っている音から上に跳ねる幅（半音）
+    kobushiMin: 0.06, kobushiMax: 0.3, kobushiTop: 0.15,
+    fallDrop: 1.5,        // フォール：音の終わりで下がる幅（半音）
+    fallHold: 0.2, fallMin: 0.07, fallMax: 0.45,
+    vibMerge: 0.1,        // ビブラート窓をつなぐ間隔（秒）
+  };
+  function median3(a, b, c) { return a > b ? (b > c ? b : (a > c ? c : a)) : (a > c ? a : (b > c ? c : b)); }
+  // 窓 [lo, hi] の中央値（小さな窓用）
+  function medianRange(p, lo, hi) {
+    const w = [];
+    for (let k = lo; k <= hi; k++) w.push(p[k]);
+    w.sort((x, y) => x - y);
+    return w.length ? w[w.length >> 1] : 0;
+  }
+
+  // frames: [{t, midi|null, rms}] → { shakuri:[{t}], kobushi:[{t}], fall:[{t}], vibrato:[{t,d}], counts }
+  // opts.vibrato: scanVibrato の結果（scorePerformance から渡すと再計算しない）
+  function detectTechniques(frames, opts) {
+    opts = opts || {};
+    const P = Object.assign({}, TECH, opts.params || {});
+    const out = { shakuri: [], kobushi: [], fall: [], vibrato: [], counts: { shakuri: 0, kobushi: 0, fall: 0, vibrato: 0 } };
+    const fr = (frames || []).filter((f) => f && Number.isFinite(f.t)).sort((a, b) => a.t - b.t);
+    const voiced = fr.filter((f) => f.midi != null && Number.isFinite(f.midi));
+
+    // ビブラート：scorePerformance と同じ判定（vibratoSec と一致させる）
+    const vib = opts.vibrato || scanVibrato(detrendRuns(voicedRuns(voiced)));
+    for (const w of vib.windows) {
+      const pr = out.vibrato[out.vibrato.length - 1];
+      if (pr && w.t0 - (pr.t + pr.d) <= P.vibMerge) pr.d = Math.max(pr.d, w.t1 - pr.t);
+      else out.vibrato.push({ t: w.t0, d: w.t1 - w.t0 });
+    }
+
+    if (voiced.length >= 6) {
+      // 1) 60fps の格子に揃える（ビン内は中央値）
+      const dt = 1 / P.fps, t0 = voiced[0].t;
+      const n = Math.floor((voiced[voiced.length - 1].t - t0) / dt) + 1;
+      const raw = new Array(n).fill(null);
+      for (let i = 0; i < voiced.length;) {
+        const b = Math.min(n - 1, Math.round((voiced[i].t - t0) / dt));
+        let j = i;
+        const w = [];
+        while (j < voiced.length && Math.min(n - 1, Math.round((voiced[j].t - t0) / dt)) === b) w.push(voiced[j++].midi);
+        w.sort((x, y) => x - y);
+        raw[b] = w[w.length >> 1];
+        i = j;
+      }
+      // 2) 短い途切れをつなぐ（前後の高さが近いときだけ）
+      const maxGap = Math.round(P.bridge / dt);
+      for (let i = 1; i < n; i++) {
+        if (raw[i] != null || raw[i - 1] == null) continue;
+        let j = i;
+        while (j < n && raw[j] == null) j++;
+        if (j < n && j - i <= maxGap) {
+          const a = raw[i - 1], c = raw[j], d = c - a, df = d - 12 * Math.round(d / 12);
+          if (Math.abs(df) < 2) for (let k = i; k < j; k++) raw[k] = 2 * (k - i) < j - i ? a : a + df; // 補間で「滑り」を作らない
+        }
+        i = j;
+      }
+      // ラン（連続区間）
+      const runs = [];
+      for (let i = 0; i < n;) {
+        if (raw[i] == null) { i++; continue; }
+        let j = i;
+        while (j + 1 < n && raw[j + 1] != null) j++;
+        if (j - i >= 5) runs.push([i, j]);
+        i = j + 1;
+      }
+      const p = new Float64Array(n), L = new Float64Array(n), M = new Float64Array(n); // M: 3点メディアンのみ（滑りの速さを測る用）
+      const H = Math.round(0.25 / dt); // 0.5秒窓の中央値＝「保っている音」（短い装飾やビブラートを無視、音の段差は保つ）
+      const ST = Math.round(P.stableWin / dt);
+      for (const [a, b] of runs) {
+        // 3) オクターブ飛び補正（±0.2秒の中央値基準）→ 3点メディアン → 3点平均
+        const m = new Float64Array(b - a + 1);
+        for (let i = a; i <= b; i++) m[i - a] = raw[i];
+        const R = 12, fixd = new Float64Array(m.length);
+        for (let i = 0; i < m.length; i++) {
+          const ref = medianRange(m, Math.max(0, i - R), Math.min(m.length - 1, i + R));
+          const d = m[i] - ref, k = Math.round(d / 12);
+          fixd[i] = k !== 0 && Math.abs(d - 12 * k) < 2 ? m[i] - 12 * k : m[i];
+        }
+        const md = new Float64Array(m.length);
+        for (let i = 0; i < m.length; i++) M[a + i] = md[i] = i === 0 || i === m.length - 1 ? fixd[i] : median3(fixd[i - 1], fixd[i], fixd[i + 1]);
+        for (let i = 0; i < m.length; i++) {
+          const lo = Math.max(0, i - 1), hi = Math.min(m.length - 1, i + 1);
+          let s = 0;
+          for (let k = lo; k <= hi; k++) s += md[k];
+          p[a + i] = s / (hi - lo + 1);
+        }
+        for (let i = a; i <= b; i++) L[i] = medianRange(p, Math.max(a, i - H), Math.min(b, i + H));
+      }
+      const T = (i) => t0 + i * dt;
+      const inVib = (t) => out.vibrato.some((v) => t >= v.t - 0.1 && t <= v.t + v.d + 0.1);
+
+      for (const [a, b] of runs) {
+        // 落ち着いた区間： [i, i+ST] の上下幅が stableRange 以下
+        const stable = new Uint8Array(b - a + 1);
+        for (let i = a; i + ST <= b; i++) {
+          let mx = -1e9, mn = 1e9;
+          for (let k = i; k <= i + ST; k++) { if (p[k] > mx) mx = p[k]; if (p[k] < mn) mn = p[k]; }
+          stable[i - a] = mx - mn <= P.stableRange ? 1 : 0;
+        }
+        const isStable = (i) => i >= a && i <= b && stable[i - a] === 1;
+
+        // --- しゃくり：落ち着く直前に、下から滑らかにずり上がっている ---
+        let lastSh = -1e9;
+        for (let i = a; i + ST <= b; i++) {
+          if (!isStable(i) || isStable(i - 1)) continue;
+          const target = medianRange(p, i, i + ST);
+          let k = i, low = i;
+          const look = Math.round(P.shakuriLook / dt);
+          while (k - 1 >= a && i - (k - 1) <= look && M[k - 1] <= M[k] + 0.25) { k--; if (M[k] < M[low]) low = k; }
+          const lv = M[low], rise = target - lv;
+          if (rise < P.shakuriRise) continue;
+          // 20〜80%の高さにいたフレーム数から滑りの長さを推定（ただの段差は0〜1フレーム）
+          let j20 = low, inBand = 0;
+          for (let j = low; j <= i; j++) if (M[j] <= lv + 0.2 * rise) j20 = j;
+          for (let j = j20; j <= i + ST; j++) { if (M[j] >= lv + 0.8 * rise) break; if (M[j] > lv + 0.2 * rise) inBand++; }
+          const dur = inBand * dt / 0.6, j10 = j20;
+          if (dur < P.shakuriMin || dur > P.shakuriMax) continue;
+          const t = T(j10);
+          if (t - lastSh < 0.15) continue;
+          out.shakuri.push({ t });
+          lastSh = t;
+        }
+
+        // --- こぶし：保っている音から一瞬だけ上に跳ねて戻る ---
+        const W = Math.round(0.25 / dt), pre = Math.round(0.12 / dt);
+        let lastKo = -1e9;
+        for (let i = a + 1; i < b; i++) {
+          const base = L[i];
+          if (p[i] - base < P.kobushiRise || p[i] < p[i - 1] || p[i] <= p[i + 1]) continue;
+          let s = i, e = i;
+          while (s - 1 >= a && p[s - 1] - base > 0.3) s--;
+          while (e + 1 <= b && p[e + 1] - base > 0.3) e++;
+          const next = e + 1;
+          const dur = (e - s + 1) * dt;
+          if (s - a < pre || b - e < pre || dur < P.kobushiMin || dur > P.kobushiMax) { i = next; continue; }
+          const peak = p[i], half = base + 0.5 * (peak - base);
+          let top = 0;
+          for (let k = s; k <= e; k++) if (p[k] > half) top++;
+          if (top * dt > P.kobushiTop) { i = next; continue; }
+          const before = medianRange(p, s - pre, s - 1), after = medianRange(p, e + 1, e + pre);
+          if (Math.abs(before - base) > 0.5 || Math.abs(after - base) > 0.5 || Math.abs(after - before) > 0.6) { i = next; continue; }
+          // ビブラートの揺れや音の移り変わりではない（前後に他の大きな揺れがない）
+          let busy = false;
+          for (let k = Math.max(a, s - W); k <= Math.min(b, e + W) && !busy; k++) {
+            if (k >= s && k <= e) continue;
+            if (Math.abs(p[k] - base) >= 0.45) busy = true;
+          }
+          const t = T(s);
+          if (busy || inVib(T(i)) || t - lastKo < 0.12) { i = next; continue; }
+          out.kobushi.push({ t });
+          lastKo = t;
+          i = next;
+        }
+
+        // --- フォール：伸ばした音の終わりで、声が消える前に下がる ---
+        const HW = Math.round(P.fallHold / dt), maxTail = Math.round(P.fallMax / dt), minTail = Math.round(P.fallMin / dt);
+        for (let k = b; k >= Math.max(a + HW, b - maxTail - 1); k--) {
+          const med = medianRange(p, k - HW, k);
+          let ok = 0;
+          for (let q = k - HW; q <= k; q++) if (Math.abs(p[q] - med) <= 0.5) ok++;
+          if (ok < 0.85 * (HW + 1) || p[k] < med - 0.5) continue;
+          // k が伸ばした音の終わり
+          const tail = b - k;
+          if (tail < minTail || tail > maxTail) break;
+          const endLv = medianRange(p, Math.max(k, b - 2), b);
+          if (med - endLv < P.fallDrop) break;
+          let flat = 0, ups = 0;
+          for (let q = k + 1; q <= b; q++) {
+            if (Math.abs(p[q] - endLv) <= 0.3) flat++;
+            if (q > k + 1 && p[q] > p[q - 1] + 0.3) ups++;
+          }
+          if (flat * dt > 0.15 || ups > 1) break;
+          out.fall.push({ t: T(k) });
+          break;
+        }
+      }
+    }
+    for (const k of ['shakuri', 'kobushi', 'fall', 'vibrato']) out.counts[k] = out[k].length;
+    return out;
+  }
+  // テクニックの加点（0〜3点）：回数に応じて逓減。ビブラート・こぶしはやや重め
+  function techniqueBonus(counts) {
+    const W = { shakuri: [0.6, 4], kobushi: [0.8, 3], fall: [0.6, 3], vibrato: [1.0, 4] };
+    let b = 0;
+    for (const k in W) b += W[k][0] * (1 - Math.exp(-(counts[k] || 0) / W[k][1]));
+    return clamp(b, 0, 3);
+  }
+
+  // frames: [{t, midi|null, rms}]（曲の時刻順）, guide: [{t,d,midi}] or null
+  function scorePerformance(frames, guide, opts) {
+    opts = opts || {};
+    const transpose = opts.transpose || 0;
+    const fr = frames.slice().sort((a, b) => a.t - b.t);
+    const voiced = fr.filter((f) => f.midi != null);
+    const res = { hasGuide: !!(guide && guide.length), items: {}, notes: [], comments: [] };
+    const totalTime = fr.length > 1 ? fr[fr.length - 1].t - fr[0].t : 0;
+    const dt = fr.length > 1 ? totalTime / (fr.length - 1) : 1 / 60;
+    res.voicedSec = voiced.length * dt;
+
+    const runs = voicedRuns(voiced);
+    const detrended = detrendRuns(runs);
+    const vib = scanVibrato(detrended);
+    const vibratoSec = vib.sec;
 
     let stableN = 0, stableTotal = 0;
     for (const det of detrended) for (const d of det) {
@@ -469,7 +697,10 @@
     for (const k in w) raw += (I[k] ? I[k].value : 0) * w[k];
     raw *= participation;
     res.raw = raw;
-    res.total = res.voicedSec < 3 ? 0 : 100 * Math.pow(raw / 100, 0.6);
+    const tech = detectTechniques(fr, { vibrato: vib });
+    res.techniques = { counts: tech.counts, events: { shakuri: tech.shakuri, kobushi: tech.kobushi, fall: tech.fall, vibrato: tech.vibrato } };
+    res.bonus = res.voicedSec < 3 ? 0 : techniqueBonus(tech.counts);
+    res.total = res.voicedSec < 3 ? 0 : Math.min(100, 100 * Math.pow(raw / 100, 0.6) + res.bonus);
     res.participation = participation;
     res.stats = { vibratoSec, longCount, dbStd };
 
@@ -483,6 +714,9 @@
       if (expression < 0.3) C.push('抑揚が少なめです。サビで声を大きく、Aメロは抑えめにするとメリハリが出ます。');
       if (res.timingBias != null && Math.abs(res.timingBias) > 0.12) C.push(res.timingBias > 0 ? '歌い出しが少し遅れがちです。' : '歌い出しが少し走り気味です。');
       if (vibratoSec < 1) C.push('ロングトーンの最後にビブラートをかけると加点されます。');
+      const tc = tech.counts, nTech = tc.shakuri + tc.kobushi + tc.fall + tc.vibrato;
+      if (!nTech) C.push('しゃくりやこぶしなどのテクニックを入れると加点されます。');
+      else if (nTech >= 20 && (tc.shakuri > 0) + (tc.kobushi > 0) + (tc.fall > 0) + (tc.vibrato > 0) >= 3) C.push('テクニックを豊富に使えています！');
       if (!C.length) C.push('バランスの良い歌唱でした！');
     }
     return res;
@@ -644,10 +878,34 @@
     return { offset: bestC + oct, fit: best / pairs.length };
   }
 
+  // 歌声（userFrames: [{t, midi}]）と画面バー（barFrames: [{t, rel}]）を照らし合わせ、
+  // 高さのずれ（offset）と時間のずれ（shift: 歌声側の時刻に足す秒）を推定する。
+  function estimateBarAlignment(userFrames, barFrames, opts) {
+    opts = opts || {};
+    const shifts = opts.shifts || [-0.3, -0.2, -0.1, 0, 0.1, 0.2, 0.3];
+    const bf = barFrames.filter((f) => f.t != null).sort((a, b) => a.t - b.t);
+    const uf = userFrames.filter((f) => f.midi != null).sort((a, b) => a.t - b.t);
+    const stride = Math.max(1, Math.floor(uf.length / 4000));
+    let best = null;
+    for (const sh of shifts) {
+      const pairs = [];
+      let j = 0;
+      for (let i = 0; i < uf.length; i += stride) {
+        const tt = uf[i].t + sh;
+        while (j + 1 < bf.length && bf[j + 1].t <= tt) j++;
+        const b = bf[j];
+        if (b && b.rel != null && tt >= b.t && tt - b.t < 0.1) pairs.push({ rel: b.rel, midi: uf[i].midi });
+      }
+      const e = estimateBarOffset(pairs);
+      if (e && (!best || e.fit > best.fit)) best = { offset: e.offset, fit: e.fit, shift: sh, pairs: pairs.length };
+    }
+    return best;
+  }
+
   const api = {
     NOTE_NAMES, clamp, freqToMidi, midiToFreq, midiName, parseVideoId, detectPitch,
     parseLrc, formatStamp, parseMidi, toMonophonic, framesToNotes, findNote, foldDiff,
-    pitchCredit, scorePerformance, detectMelody, findBarLayout, readBarPitch, estimateBarOffset,
+    pitchCredit, scorePerformance, detectTechniques, techniqueBonus, detectMelody, findBarLayout, readBarPitch, estimateBarOffset, estimateBarAlignment,
   };
   if (typeof module !== 'undefined' && module.exports) module.exports = api;
   else root.KaraCore = api;
