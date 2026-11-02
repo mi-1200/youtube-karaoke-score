@@ -669,3 +669,23 @@ test('barNotesToGuide: drops rap dot rows (same height, short, regular) but keep
   assert.equal(g.rap.length, 1);
   assert.ok(Math.abs(g.rap[0][0] - rapStart) < 0.01 && Math.abs(g.rap[0][1] - rapEnd) < 0.01, JSON.stringify(g.rap));
 });
+
+test('findBarLayout / readBarSegments: dark bars with a red line over a bright, busy background', () => {
+  const w = 960, h = 200, top = 20, bottom = 145, sp = 13, lineX = 800; // 五線13px間隔（半音6.5px）、縦線は右寄り
+  const data = new Uint8ClampedArray(w * h * 4);
+  const set = (x, y, c) => { const i = (y * w + x) * 4; data[i] = c[0]; data[i + 1] = c[1]; data[i + 2] = c[2]; data[i + 3] = 255; };
+  for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) { const v = 120 + 60 * Math.sin(x / 37) * Math.cos(y / 23); set(x, y, [v + 30, v + 10, v - 20]); } // ぼけた光の背景
+  for (let y = top; y <= bottom; y += sp) for (let x = 0; x < w; x++) { const i = (y * w + x) * 4; data[i] += 18; data[i + 1] += 18; data[i + 2] += 18; }
+  for (let y = top; y <= bottom; y++) for (let x = lineX - 1; x <= lineX + 1; x++) set(x, y, [230, 25, 80]);
+  const bars = [[lineX + 3, lineX + 40, 9], [lineX + 44, lineX + 70, 7], [lineX + 74, lineX + 130, 11]];
+  for (const [a, b, r] of bars) for (let x = a; x <= b; x++) for (let dy = -5; dy <= 5; dy++) set(x, Math.round(bottom - r * sp / 2) + dy, [45, 45, 45]);
+  for (let x = 100; x < lineX; x++) for (let dy = -5; dy <= 5; dy++) set(x, Math.round(bottom - 8 * sp / 2) + dy, [220, 70, 110]); // 歌い終わったバー（色付き）
+  const img = { data, width: w, height: h }, rect = { x: 0, y: 0, w, h: 540 };
+  const L = K.findBarLayout(img, rect);
+  assert.ok(L && L.color === 'dark' && Math.abs(L.lineLeft - lineX) <= 2, JSON.stringify(L));
+  assert.ok(Math.abs(L.step - sp / 2) < 0.4, 'step ' + L.step);
+  const segs = K.readBarSegments(img, rect, L);
+  const rels = segs.map((s) => s.rel);
+  assert.equal(segs.length, 3, JSON.stringify(segs));
+  assert.ok(Math.abs((rels[0] - rels[1]) - 2) < 0.4 && Math.abs((rels[2] - rels[0]) - 2) < 0.4, JSON.stringify(rels));
+});

@@ -805,23 +805,30 @@
   function isBarPink(r, g, b) { return r > 190 && g < 150 && b > 110 && r - g > 80; }
   // 黄色（金色）のバー・縦線の動画もある
   function isBarGold(r, g, b) { return r > 190 && g > 150 && g < 240 && b < 130 && r - b > 100 && r >= g; }
-  const BAR_TESTS = { pink: isBarPink, gold: isBarGold };
+  // 黒（濃い灰色）のバーに赤い縦線の動画もある（例: カラオケ音源ちゃんねる）。歌い終わったバーは色が付く
+  function isBarDark(r, g, b) { const mx = Math.max(r, g, b), mn = Math.min(r, g, b); return mx <= 85 && mx >= 12 && mx - mn <= 10; }
+  function isLineCrimson(r, g, b) { return r > 130 && g < 60 && b > 35 && b < 120 && r - b > 70; }
+  const BAR_TESTS = { pink: isBarPink, gold: isBarGold, dark: isBarDark };
+  const LINE_TESTS = { pink: isBarPink, gold: isBarGold, dark: isLineCrimson };
   function barTest(layout) { return BAR_TESTS[(layout && layout.color) || 'pink'] || isBarPink; }
   // img: {data, width, height}（RGBA）, rect: 動画の範囲 {x,y,w,h}（img の画素座標）
   // 縦線（現在位置）と音程バーの帯を探す。見つからなければ null
   function isLight(r, g, b) { const mn = Math.min(r, g, b), mx = Math.max(r, g, b); return mn > 135 && mx - mn < 45; }
   function findBarLayout(img, rect) {
-    // まずピンクの縦線を探し、無ければ（曲間などで線が白い時）明るい縦線を探す
-    for (const color of Object.keys(BAR_TESTS)) {
-      const L = findBarLayoutBy(img, rect, BAR_TESTS[color], 0.08, color);
-      if (L) return L;
-    }
-    for (const color of Object.keys(BAR_TESTS)) {
-      const T = BAR_TESTS[color];
-      const L = findBarLayoutBy(img, rect, (r, g, b) => T(r, g, b) || isLight(r, g, b), 0.15, color);
-      if (L && countBarPixels(img, rect, L) > 0) return L;
-    }
-    return null;
+    // 動画の種類（縦線とバーの色）ごとに縦線を探し、縦線の右にそのバーの色が一番多いものを選ぶ。
+    // 見つからなければ（曲間などで線が白い時）明るい縦線を探す
+    const pick = (minRun, light) => {
+      let best = null, bestN = 0;
+      for (const color of Object.keys(BAR_TESTS)) {
+        const LT = LINE_TESTS[color];
+        const L = findBarLayoutBy(img, rect, light ? (r, g, b) => LT(r, g, b) || isLight(r, g, b) : LT, minRun, color);
+        if (!L) continue;
+        const n = countBarPixels(img, rect, L);
+        if (n > bestN) { best = L; bestN = n; }
+      }
+      return best;
+    };
+    return pick(0.08, false) || pick(0.15, true);
   }
   // 縦線より右の帯にあるバーの色の画素数（縦線が白い時に、バーの色を決めるため）
   function countBarPixels(img, rect, L) {
@@ -832,10 +839,30 @@
     }
     return n;
   }
+  // 背景が明るくて五線が薄い時：明るさの縦の並びの周期（自己相関）から五線の間隔を出す。半音＝間隔の半分
+  function staffStepByPeriod(rows) {
+    const n = rows.length;
+    if (n < 30) return null;
+    const hp = rows.map((v, i) => { let s = 0, c = 0; for (let k = Math.max(0, i - 4); k <= Math.min(n - 1, i + 4); k++) { s += rows[k]; c++; } return v - s / c; });
+    const ac = (p) => { let s = 0, a = 0, b = 0; for (let i = 0; i + p < n; i++) { s += hp[i] * hp[i + p]; a += hp[i] * hp[i]; b += hp[i + p] * hp[i + p]; } return a && b ? s / Math.sqrt(a * b) : 0; };
+    const acs = [];
+    let best = 0;
+    for (let p = 5; p <= Math.floor(n / 3); p++) { acs[p] = ac(p); if (acs[p] > best) best = acs[p]; }
+    if (best < 0.3) return null;
+    // 周期の2倍・3倍も高く出るので、十分高い山のうち一番短い周期を選ぶ
+    let bp = 0;
+    for (let p = 6; p < Math.floor(n / 3); p++) if (acs[p] >= best * 0.75 && acs[p] >= acs[p - 1] && acs[p] >= acs[p + 1]) { bp = p; break; }
+    if (!bp) return null;
+    best = acs[bp];
+    // 端数まで：前後の値で放物線補間
+    const a = ac(bp - 1), c = ac(bp + 1), den = a - 2 * best + c;
+    const per = den < 0 ? bp + 0.5 * (a - c) / den : bp;
+    return per / 2;
+  }
   function findBarLayoutBy(img, rect, test, minRun, color) {
     const { data, width } = img;
     const skipT = BAR_TESTS[color || 'pink'];
-    const x0 = Math.round(rect.x + rect.w * 0.12), x1 = Math.round(rect.x + rect.w * 0.6);
+    const x0 = Math.round(rect.x + rect.w * 0.1), x1 = Math.round(rect.x + rect.w * 0.9);
     const y0 = Math.round(rect.y), y1 = Math.round(rect.y + rect.h * 0.45);
     let best = { run: 0 };
     const runs = [];
@@ -888,6 +915,7 @@
         step = span / Math.max(1, Math.round(span / md)) / 2;
       }
     }
+    if (!step || step < 1.5) step = staffStepByPeriod(rows);
     if (!step || step < 1.5) step = (bottom - top) / 25.6;
     return { lineLeft, lineRight, top, bottom, step, color: color || 'pink' };
   }
@@ -951,7 +979,7 @@
       for (const p of prev) {
         if (p.clipL || Math.abs(p.rel - c.rel) > 0.4) continue;
         const dx = p.x0 - c.x0;
-        if (dx < 0 || dx > maxDx) continue;
+        if (dx < 0.5 || dx > maxDx) continue; // 止まっている物（背景）は数えない
         if (!p.clipR && !c.clipR && Math.abs((p.x1 - p.x0) - (c.x1 - c.x0)) > 3) continue;
         const k = Math.round(dx); votes.set(k, (votes.get(k) || 0) + 1);
       }
