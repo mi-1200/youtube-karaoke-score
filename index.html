@@ -189,6 +189,7 @@ td, th { border-bottom: 1px solid var(--line); padding: 6px 4px; text-align: lef
 <div id="tab-settings" class="tabpanel">
   <div class="row">
     <label class="f">遅延補正（ミリ秒）<input id="latencyInput" type="number" step="10" min="0" max="600" value="150"></label>
+    <label class="f">音程の判定<select id="toleranceInput"><option value="easy">やさしい</option><option value="normal">ふつう（カラオケ並み）</option><option value="strict">きびしい</option></select></label>
     <label class="f">マイク感度（小さいほど敏感）<input id="gateInput" type="number" step="0.002" min="0.001" max="0.1" value="0.01"></label>
     <label class="f" style="flex-direction:row;align-items:center;gap:6px;color:var(--text)"><input id="echoInput" type="checkbox" checked> エコー除去（スピーカー使用時）</label>
   </div>
@@ -239,7 +240,7 @@ td, th { border-bottom: 1px solid var(--line); padding: 6px 4px; text-align: lef
   function loadJSON(k, def) { try { const v = localStorage.getItem(k); return v ? JSON.parse(v) : def; } catch (e) { return def; } }
   function saveJSON(k, v) { try { localStorage.setItem(k, JSON.stringify(v)); return true; } catch (e) { return false; } }
   let songs = loadJSON(STORE_KEY, {});
-  const settings = Object.assign({ latency: 150, gate: 0.01, echo: true }, loadJSON(SETTINGS_KEY, {}));
+  const settings = Object.assign({ latency: 150, gate: 0.01, echo: true, tolerance: 'normal' }, loadJSON(SETTINGS_KEY, {}));
   function song() { return currentId ? (songs[currentId] = songs[currentId] || { title: '', guide: null, offset: 0, transpose: 0, lyrics: '', history: [] }) : null; }
   function persist() { saveJSON(STORE_KEY, songs); refreshSongSelect(); }
 
@@ -420,7 +421,7 @@ td, th { border-bottom: 1px solid var(--line); padding: 6px 4px; text-align: lef
       }
       // 伴奏だけの所（ガイドのバーも歌詞も無い所）の声や雑音は採点に入れない
       scoreFrames = K.maskFrames(scoreFrames, K.singingSections(guideForScore, lyrics));
-      const res = K.scorePerformance(scoreFrames, guideForScore, {});
+      const res = K.scorePerformance(scoreFrames, guideForScore, { tolerance: settings.tolerance });
       lastDebug = recordDebug('sing', { result: res, screen: screenDebug() });
       showResult(res);
       if (screenNote) alertLine(screenNote);
@@ -613,7 +614,7 @@ td, th { border-bottom: 1px solid var(--line); padding: 6px 4px; text-align: lef
     const changed = screen.offset == null || Math.abs(est.offset - screen.offset) > 0.3;
     screen.offset = est.offset; screen.fit = est.fit; screen.offsetSrc = src; screen.shift = est.shift || 0;
     screen.audFit = aud ? aud.fit : null; screen.usrFit = usr ? usr.fit : null;
-    if (changed) { screen.notes = []; liveNotes = new Map(); screen.frames.forEach((f) => { if (f.rel != null) addScreenNote(f.t, Math.round(f.rel + screen.offset)); }); }
+    if (changed) { screen.notes = []; liveNotes = new Map(); liveSum = 0; liveN = 0; screen.frames.forEach((f) => { if (f.rel != null) addScreenNote(f.t, Math.round(f.rel + screen.offset)); }); }
     updateScreenStatus();
   }
   function addScreenNote(t, m) {
@@ -645,6 +646,13 @@ td, th { border-bottom: 1px solid var(--line); padding: 6px 4px; text-align: lef
 
   /* ---------- メインループ ---------- */
   let liveSum = 0, liveN = 0;
+  function tolerance() { return K.TOLERANCE[settings.tolerance] || K.TOLERANCE.normal; }
+  function liveNoteHit(ln, n) {
+    if (ln.vals.length < 2) return false;
+    const v = ln.vals.slice().sort((a, b) => a - b), m = v[v.length >> 1];
+    const coverage = K.clamp((ln.vals.length / Math.max(1, ln.n)) / 0.5, 0, 1);
+    return K.pitchCredit(Math.abs(m - n.midi), tolerance()) * coverage >= 0.5;
+  }
   // 歌っている最中のテクニック表示（直近3秒を0.4秒ごとに調べる）
   let liveTech = [], liveTechAt = 0;
   const TECH_LABEL = { shakuri: 'しゃくり', kobushi: 'こぶし', fall: 'フォール', vibrato: 'ビブラート' };
@@ -693,14 +701,22 @@ td, th { border-bottom: 1px solid var(--line); padding: 6px 4px; text-align: lef
       if (mode === 'sing' && G.length) {
         const idx = K.findNote(G, ft + userShift());
         if (idx >= 0) {
-          const c = midi != null ? K.pitchCredit(Math.abs(K.foldDiff(midi, G[idx].midi))) : 0;
-          const ln = liveNotes.get(idx) || { sum: 0, n: 0 };
-          ln.sum += c; ln.n++; liveNotes.set(idx, ln);
-          liveSum += c; liveN++;
+          // バー1本ごとの判定（出だしを除いた歌声の中央値で見る）。表示用の％は、終わったバーの的中率
+          const note = G[idx], ln = liveNotes.get(idx) || { vals: [], n: 0, done: false };
+          ln.n++;
+          if (midi != null && ft + userShift() - note.t >= Math.min(0.12, note.d * 0.3)) ln.vals.push(note.midi + K.foldDiff(midi, note.midi));
+          liveNotes.set(idx, ln);
         }
       }
     }
     if (mode === 'sing' && playing) updateLiveTech(ft); else if (mode !== 'sing') liveTech = [];
+    if (mode === 'sing' && G.length) {
+      // 終わったバーを確定して的中率を更新
+      for (const [i, ln] of liveNotes) {
+        const n = G[i];
+        if (!ln.done && n && n.t + n.d < ft + userShift()) { ln.done = true; ln.hit = liveNoteHit(ln, n); liveN++; if (ln.hit) liveSum++; }
+      }
+    }
     if (mode === 'sing' && G.length && liveN) {
       $('liveAcc').textContent = '音程 ' + Math.round(100 * liveSum / liveN) + '%';
     } else if (mode !== 'sing') { $('liveAcc').textContent = ''; liveSum = 0; liveN = 0; }
@@ -751,7 +767,7 @@ td, th { border-bottom: 1px solid var(--line); padding: 6px 4px; text-align: lef
       if (xb < 0 || xa > W) return;
       const ln = liveNotes.get(i);
       let col = 'rgba(160,170,210,.35)';
-      if (mode === 'sing' && ln && n.t + n.d < t) col = ln.sum / ln.n >= 0.6 ? 'rgba(255,213,74,.9)' : 'rgba(120,120,150,.25)';
+      if (mode === 'sing' && ln && ln.done) col = ln.hit ? 'rgba(255,213,74,.9)' : 'rgba(120,120,150,.25)';
       else if (n.t <= t && t < n.t + n.d) col = 'rgba(200,210,255,.6)';
       ctx.fillStyle = col;
       roundRect(xa, Y(n.midi) - rowH / 2, Math.max(2, xb - xa - 1), rowH, rowH / 2);
@@ -766,7 +782,8 @@ td, th { border-bottom: 1px solid var(--line); padding: 6px 4px; text-align: lef
       if (gi >= 0) {
         const d = K.foldDiff(b.midi, effGuide[gi].midi);
         m = effGuide[gi].midi + Math.round(d);
-        col = Math.abs(d) <= 0.6 ? '#4be08a' : '#ff9f4a';
+        const avgD = K.foldDiff(b.sum / b.n, effGuide[gi].midi);
+        col = K.pitchCredit(Math.abs(avgD), tolerance()) >= 0.5 ? '#4be08a' : '#ff9f4a';
       } else { while (m < viewLo) m += 12; while (m > viewHi) m -= 12; }
       const xa = Math.max(0, X(b.t0 + sh)), xb = X(b.t1 + sh);
       if (xb < 0) continue;
@@ -1087,6 +1104,8 @@ td, th { border-bottom: 1px solid var(--line); padding: 6px 4px; text-align: lef
 
   /* ---------- 設定・その他 ---------- */
   $('latencyInput').value = settings.latency; $('gateInput').value = settings.gate; $('echoInput').checked = settings.echo;
+  $('toleranceInput').value = K.TOLERANCE[settings.tolerance] ? settings.tolerance : 'normal';
+  $('toleranceInput').onchange = (e) => { settings.tolerance = e.target.value; saveJSON(SETTINGS_KEY, settings); };
   $('latencyInput').onchange = (e) => { settings.latency = K.clamp(+e.target.value || 0, 0, 600); saveJSON(SETTINGS_KEY, settings); };
   $('gateInput').onchange = (e) => { settings.gate = K.clamp(+e.target.value || 0.01, 0.001, 0.1); saveJSON(SETTINGS_KEY, settings); };
   $('echoInput').onchange = (e) => { settings.echo = e.target.checked; saveJSON(SETTINGS_KEY, settings); if (micStream && mode === 'idle') { stopMic(); startMic(); } };

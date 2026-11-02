@@ -380,7 +380,7 @@ test('scorePerformance (guide): ordering perfect > slightly off > poor > bad > s
   assert.ok(tot.perfect > tot.slight && tot.slight > tot.poor && tot.poor > tot.bad, JSON.stringify(tot));
   assert.ok(tot.good > tot.poor);
   assert.ok(tot.perfect >= 90, JSON.stringify(tot));
-  assert.ok(tot.good >= 85 && tot.good <= 97, JSON.stringify(tot));
+  assert.ok(tot.good >= 85 && tot.good <= 100, JSON.stringify(tot)); // v0.6: 実際のカラオケ並みに判定を甘くした
   assert.ok(tot.poor >= 55 && tot.poor <= 80, JSON.stringify(tot));
   assert.ok(r.perfect.items.pitch.value > r.slight.items.pitch.value);
   assert.ok(r.slight.items.pitch.value > r.poor.items.pitch.value);
@@ -548,4 +548,11 @@ test('singingSections / maskFrames: drop voice outside sung parts', () => {
   assert.ok(K.inSections(ly, 16) && !K.inSections(ly, 19) && K.inSections(ly, 41));
   assert.equal(K.singingSections(null, null), null);
   assert.equal(K.maskFrames(fr, null), fr);
+});
+
+test('scorePerformance: tolerance levels (easy >= normal >= strict)', () => {
+  const o = PROFILES.poor;
+  const sc = (tol) => K.scorePerformance(H.singFrames(GUIDE, o), GUIDE, { tolerance: tol }).items.pitch.value;
+  const e = sc('easy'), n = sc('normal'), st = sc('strict');
+  assert.ok(e >= n && n >= st && e > st, JSON.stringify({ e, n, st }));
 });

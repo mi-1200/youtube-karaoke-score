@@ -260,7 +260,16 @@
   }
   // オクターブ違いを許容した半音差
   function foldDiff(sung, target) { const d = sung - target; return d - 12 * Math.round(d / 12); }
-  function pitchCredit(absDiff) { return clamp(1 - (absDiff - 0.35) / 0.8, 0, 1); }
+  // 音程の判定幅（半音）：full 以内なら満点、zero 以上で0点
+  const TOLERANCE = {
+    easy: { full: 0.8, zero: 2.0 },
+    normal: { full: 0.6, zero: 1.6 },
+    strict: { full: 0.35, zero: 1.15 },
+  };
+  function pitchCredit(absDiff, tol) {
+    tol = tol || TOLERANCE.strict;
+    return clamp(1 - (absDiff - tol.full) / (tol.zero - tol.full), 0, 1);
+  }
 
   // 連続した有声区間（ラン）
   function voicedRuns(voiced) {
@@ -614,21 +623,37 @@
     let pitch = 0, rhythm = null, participation = 1;
     if (res.hasGuide) {
       const g = guide.map((n) => ({ t: n.t, d: n.d, midi: n.midi + transpose }));
-      const per = g.map(() => ({ sum: 0, n: 0 }));
-      let csum = 0, cn = 0, sungIn = 0;
+      const tol = TOLERANCE[opts.tolerance] || TOLERANCE.normal;
+      // 実際のカラオケのように「音程バー1本ごと」に判定する：
+      // 出だし（しゃくり等）を除いた区間の歌声の中央値が、バーの高さにどれだけ近いか
+      const per = g.map(() => ({ vals: [], n: 0 }));
+      let cn = 0, sungIn = 0;
       for (const f of fr) {
         const idx = findNote(g, f.t);
         if (idx < 0) continue;
         const note = g[idx];
         if (f.t - note.t < 0.08 && f.midi == null) continue; // 出だしの息継ぎは大目に見る
-        let c = 0;
-        if (f.midi != null) { c = pitchCredit(Math.abs(foldDiff(f.midi, note.midi))); sungIn++; }
-        per[idx].sum += c; per[idx].n++;
-        csum += c; cn++;
+        per[idx].n++; cn++;
+        if (f.midi != null) {
+          sungIn++;
+          if (f.t - note.t >= Math.min(0.12, note.d * 0.3)) per[idx].vals.push(f.midi);
+        }
       }
-      pitch = cn ? csum / cn : 0;
+      let wsum = 0, csum = 0;
+      res.notes = g.map((n, i) => {
+        const P = per[i];
+        let credit = 0, dev = null;
+        if (P.vals.length >= 2) {
+          const ref = n.midi, folded = P.vals.map((m) => ref + foldDiff(m, ref));
+          dev = median(folded) - ref;
+          const coverage = clamp((P.vals.length / Math.max(1, P.n)) / 0.5, 0, 1); // 半分以上声が出ていれば満額
+          credit = pitchCredit(Math.abs(dev), tol) * coverage;
+        }
+        wsum += n.d; csum += credit * n.d;
+        return { ...n, credit, dev, hit: credit >= 0.5 };
+      });
+      pitch = wsum ? csum / wsum : 0;
       participation = cn ? clamp(sungIn / cn / 0.5, 0, 1) : 0;
-      res.notes = g.map((n, i) => ({ ...n, credit: per[i].n ? per[i].sum / per[i].n : 0, hit: per[i].n > 0 && per[i].sum / per[i].n >= 0.6 }));
       // リズム：音の出だしと歌い出しのずれ
       // 「この音の高さに切り替わった最初のフレーム」を歌い出しとみなす。
       // 直前の音の伸ばし（レガート）を出だしと誤認しないよう、直前の音より近い高さであることを条件にする。
@@ -938,7 +963,7 @@
   }
 
   const api = {
-    NOTE_NAMES, clamp, freqToMidi, midiToFreq, midiName, parseVideoId, detectPitch,
+    NOTE_NAMES, TOLERANCE, clamp, freqToMidi, midiToFreq, midiName, parseVideoId, detectPitch,
     parseLrc, formatStamp, parseMidi, toMonophonic, framesToNotes, findNote, foldDiff,
     pitchCredit, scorePerformance, detectTechniques, techniqueBonus, detectMelody, findBarLayout, readBarPitch, estimateBarOffset, estimateBarAlignment, singingSections, inSections, maskFrames,
   };
