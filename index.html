@@ -80,6 +80,8 @@ td, th { border-bottom: 1px solid var(--line); padding: 6px 4px; text-align: lef
 .tech.bonus { border-color: var(--gold); color: var(--gold); }
 #pitchGraphBox { margin: 10px 0 4px; }
 #pitchGraphBox h4 { margin: 0 0 4px; font-size: 14px; font-weight: 600; }
+#liveGraphBox { margin: 6px 0 2px; }
+#liveGraph { display: block; width: 100%; height: 120px; background: var(--panel2); border-radius: 10px; }
 #pitchGraph { display: block; width: 100%; height: auto; background: var(--panel2); border-radius: 10px; }
 .appfoot { margin-top: 24px; text-align: center; color: var(--muted); font-size: 13px; }
 .appfoot a, .linkbtn { color: var(--accent2); }
@@ -129,6 +131,7 @@ td, th { border-bottom: 1px solid var(--line); padding: 6px 4px; text-align: lef
   </div>
 </div>
 <div id="modeLine" class="muted"></div>
+<div id="liveGraphBox" hidden><canvas id="liveGraph"></canvas></div>
 
 <div class="tabs">
   <button data-tab="guide" class="active">ガイドメロディ</button>
@@ -423,7 +426,7 @@ td, th { border-bottom: 1px solid var(--line); padding: 6px 4px; text-align: lef
     if (newMode === 'tabguide') { if (!(await startTabCapture())) return; }
     else if (!(await startMic())) return;
     mode = newMode;
-    frames = []; trail = []; liveNotes = new Map();
+    frames = []; trail = []; liveNotes = new Map(); liveTimeline = null;
     if (screen) { screen.frames = []; screen.notes = []; screen.barAcc = { notes: [] }; screen.barGuide = null; scrollToStage(); }
     player.seekTo(0, true);
     player.playVideo();
@@ -756,7 +759,7 @@ td, th { border-bottom: 1px solid var(--line); padding: 6px 4px; text-align: lef
   }
 
   /* ---------- メインループ ---------- */
-  let liveSum = 0, liveN = 0, liveJudgeAt = 0;
+  let liveSum = 0, liveN = 0, liveJudgeAt = 0, liveTimeline = null, liveGraphAt = 0;
   function tolerance() { return K.TOLERANCE[settings.tolerance] || K.TOLERANCE.normal; }
   function liveNoteHit(ln, n) {
     if (ln.vals.length < 2) return false;
@@ -819,7 +822,11 @@ td, th { border-bottom: 1px solid var(--line); padding: 6px 4px; text-align: lef
       let hd = 0, td = 0;
       for (const c of ch) { td += c.t1 - c.t0; if (c.hit) hd += c.t1 - c.t0; }
       liveN = td > 0 ? 1 : 0; liveSum = td > 0 ? hd / td : 0;
+      liveTimeline = K.pitchTimeline(G, ch);
     }
+    const showLG = mode === 'sing' && liveTimeline && liveTimeline.length > 0;
+    if ($('liveGraphBox').hidden === showLG) $('liveGraphBox').hidden = !showLG;
+    if (showLG && performance.now() - liveGraphAt > 250) { liveGraphAt = performance.now(); drawPitchGraph($('liveGraph'), liveTimeline, { fit: true, now: ft + userShift() }); }
     if (mode === 'sing' && G.length && liveN) {
       $('liveAcc').textContent = '音程 ' + Math.round(100 * liveSum) + '%';
     } else if (mode !== 'sing') { $('liveAcc').textContent = ''; liveSum = 0; liveN = 0; }
@@ -1116,12 +1123,20 @@ td, th { border-bottom: 1px solid var(--line); padding: 6px 4px; text-align: lef
     drawRadar(items);
     $('pitchGraphBox').hidden = !(res.timeline && res.timeline.some((x) => x.acc != null));
     $('resultModal').classList.add('show');
-    if (!$('pitchGraphBox').hidden) drawPitchGraph(res.timeline);
+    if (!$('pitchGraphBox').hidden) drawPitchGraph($('pitchGraph'), res.timeline);
   }
   // JOYSOUND風の「音程の推移」：区間ごとの正確さを折れ線で表示
-  function drawPitchGraph(tl) {
-    const c = $('pitchGraph'), g = c.getContext('2d'), W = c.width, H = c.height;
-    const L = 46, R = 14, T = 18, B = 30, pw = W - L - R, ph = H - T - B;
+  function drawPitchGraph(c, tl, opts) {
+    opts = opts || {};
+    const g = c.getContext('2d');
+    let W = c.width, H = c.height;
+    if (opts.fit) { // 画面の大きさに合わせて描く（歌っている間の小さいグラフ）
+      const dpr = window.devicePixelRatio || 1; W = c.clientWidth; H = c.clientHeight;
+      if (c.width !== Math.round(W * dpr) || c.height !== Math.round(H * dpr)) { c.width = Math.round(W * dpr); c.height = Math.round(H * dpr); }
+      g.setTransform(dpr, 0, 0, dpr, 0, 0);
+    }
+    const small = H < 180;
+    const L = small ? 38 : 46, R = small ? 10 : 14, T = small ? 10 : 18, B = small ? 20 : 30, pw = W - L - R, ph = H - T - B;
     const css = getComputedStyle(document.documentElement);
     const fg = (css.getPropertyValue('--text') || '#eee').trim() || '#eee';
     const gold = (css.getPropertyValue('--gold') || '#ffcc33').trim() || '#ffcc33';
@@ -1129,7 +1144,7 @@ td, th { border-bottom: 1px solid var(--line); padding: 6px 4px; text-align: lef
     const lo = 40; // 縦軸の下限（%）
     const y = (v) => T + ph * (1 - (Math.max(lo, Math.min(100, v)) - lo) / (100 - lo));
     const n = tl.length, x = (i) => L + pw * (n === 1 ? 0.5 : i / (n - 1));
-    g.font = '13px sans-serif'; g.textBaseline = 'middle';
+    g.font = (small ? 11 : 13) + 'px sans-serif'; g.textBaseline = 'middle';
     [[100, '100%'], [85, '85%'], [lo, lo + '%']].forEach(([v, t], k) => {
       g.strokeStyle = k === 1 ? 'rgba(255,204,51,.55)' : 'rgba(255,255,255,.18)';
       g.setLineDash(k === 1 ? [6, 4] : []); g.lineWidth = 1;
@@ -1160,9 +1175,14 @@ td, th { border-bottom: 1px solid var(--line); padding: 6px 4px; text-align: lef
         g.fillStyle = s.acc < 60 ? '#ff4d5e' : fg; g.beginPath(); g.arc(px, py, 4.5, 0, Math.PI * 2); g.fill();
       }
     });
+    if (opts.now != null) { // 今どこを歌っているか
+      let ci = tl.findIndex((s) => opts.now < s.t1);
+      if (ci < 0) ci = n - 1;
+      g.strokeStyle = 'rgba(255,79,163,.9)'; g.lineWidth = 2; g.beginPath(); g.moveTo(x(ci), T); g.lineTo(x(ci), T + ph); g.stroke();
+    }
     g.fillStyle = 'rgba(255,255,255,.6)'; g.textBaseline = 'alphabetic';
-    g.textAlign = 'left'; g.fillText('開始', L, H - 8);
-    g.textAlign = 'right'; g.fillText('終了', W - R, H - 8);
+    g.textAlign = 'left'; g.fillText(opts.title || '開始', L, H - (small ? 5 : 8));
+    g.textAlign = 'right'; g.fillText('終了', W - R, H - (small ? 5 : 8));
   }
   function drawRadar(items) {
     const c = $('radar'), g = c.getContext('2d'), W = c.width, H = c.height, cx = W / 2, cy = H / 2 + 6, R = 150;

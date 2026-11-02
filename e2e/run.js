@@ -105,6 +105,10 @@ function makeMidi() {
   await sleep(6000);
   const acc = await page.textContent('#liveAcc');
   check('live 音程 % shown', /音程 \d+%/.test(acc), acc);
+  {
+    const lg = await page.evaluate(() => { const b = document.getElementById('liveGraphBox'); const c = document.getElementById('liveGraph'); const d = c.getContext('2d').getImageData(0, 0, c.width, c.height).data; let ink = 0; for (let i = 3; i < d.length; i += 4) if (d[i] > 0) ink++; return { visible: !b.hidden && b.offsetHeight > 0, ink }; });
+    check('live pitch graph while singing', lg.visible && lg.ink > 300, lg);
+  }
   const colors = await page.evaluate(() => { const c = document.getElementById('pitchCanvas'); const d = c.getContext('2d').getImageData(0, 0, c.width, c.height).data; let gold = 0, green = 0, orange = 0; for (let i = 0; i < d.length; i += 4) { const [r, gg, b] = [d[i], d[i + 1], d[i + 2]]; if (r > 220 && gg > 180 && b < 120) gold++; if (r < 120 && gg > 200 && b < 170) green++; if (r > 230 && gg > 130 && gg < 180 && b < 100) orange++; } return { gold, green, orange }; });
   check('colored bars / trail with guide', colors.gold > 50 || colors.green > 50, colors);
   await page.screenshot({ path: path.join(SHOTS, 'desktop-singing-guide.png') });
