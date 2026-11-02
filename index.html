@@ -77,6 +77,8 @@ td, th { border-bottom: 1px solid var(--line); padding: 6px 4px; text-align: lef
 .songsel { margin-top: 8px; }
 .techrow { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 6px; }
 .tech { background: var(--panel2); border: 1px solid var(--line); border-radius: 999px; padding: 3px 10px; font-size: 13px; }
+.updbar { background: var(--gold); color: #222; padding: 8px 14px; text-align: center; font-size: 14px; }
+.updbar button { margin-left: 10px; padding: 3px 10px; }
 .tech.bonus { border-color: var(--gold); color: var(--gold); }
 #pitchGraphBox { margin: 10px 0 4px; }
 #pitchGraphBox h4 { margin: 0 0 4px; font-size: 14px; font-weight: 600; }
@@ -622,6 +624,18 @@ td, th { border-bottom: 1px solid var(--line); padding: 6px 4px; text-align: lef
   }
   $('screenBarBtn').onclick = async () => { if (screen) stopScreen(); else if (await confirmExperimental('screen')) startScreen(); };
   window.__utascoreScreen = () => screen; // テスト・調査用
+  // 新しい版が公開されていたら知らせる（古い版がキャッシュに残っている時のため）
+  setTimeout(() => {
+    fetch('version.js?check=' + Date.now(), { cache: 'no-store' }).then((r) => r.text()).then((txt) => {
+      const m = txt.match(/version:\s*'([\d.]+)'/);
+      if (m && window.UTASCORE_VERSION && m[1] !== window.UTASCORE_VERSION) {
+        const b = document.createElement('div'); b.className = 'updbar';
+        b.innerHTML = '新しい版（v' + m[1] + '）があります。<button type="button">再読み込み</button>';
+        b.querySelector('button').onclick = () => { location.href = location.pathname + '?r=' + Date.now() + location.hash; };
+        document.body.prepend(b);
+      }
+    }).catch(() => {});
+  }, 1500);
 
   // 取り込んだ映像の中で、動画（iframe）がある範囲
   // 画面に映っている部分しか読めないので、動画が見える位置までスクロールする
@@ -676,7 +690,7 @@ td, th { border-bottom: 1px solid var(--line); padding: 6px 4px; text-align: lef
     if (screen.rel != null && screen.an) {
       screen.an.getFloatTimeDomainData(screen.abuf);
       const p = K.detectMelody(screen.abuf, audioCtx.sampleRate);
-      if (p.freq > 0) { screen.pairs.push({ rel: screen.rel, midi: K.freqToMidi(p.freq) }); if (screen.pairs.length > 3000) screen.pairs.shift(); }
+      if (p.freq > 0) { screen.pairs.push({ rel: screen.rel, midi: K.freqToMidi(p.freq), t }); if (screen.pairs.length > 3000) screen.pairs.shift(); }
     }
     if (screen.rel != null && userFrame && userFrame.midi != null) {
       screen.userPairs.push({ rel: screen.rel, midi: userFrame.midi }); if (screen.userPairs.length > 3000) screen.userPairs.shift();
@@ -688,11 +702,14 @@ td, th { border-bottom: 1px solid var(--line); padding: 6px 4px; text-align: lef
   // バーの高さ合わせ：動画のガイドメロの音と、歌声の両方で推定し、一致度が高い方を使う。
   // 歌声で合わせた場合は、時間のずれ（遅延補正の過不足）も同時に推定する
   function updateOffset(final) {
-    const aud = K.estimateBarOffset(screen.pairs.length >= 40 ? screen.pairs : []);
+    // ラップ（高さの無い点線）の所は高さ合わせに使わない
+    const rap = screen.rap || [], notRap = (f) => !rap.some((r) => f.t >= r[0] - 0.2 && f.t <= r[1] + 0.2);
+    const ap = screen.pairs.filter(notRap);
+    const aud = K.estimateBarOffset(ap.length >= 40 ? ap : []);
     let usr = null;
     if (mode === 'sing' || final) {
       const tmin = final ? -1 : songTime() - 90; // 普段は直近90秒で計算（重さ対策）
-      usr = K.estimateBarAlignment(frames.filter((f) => f.t >= tmin), screen.frames.filter((f) => f.t >= tmin - 1));
+      usr = K.estimateBarAlignment(frames.filter((f) => f.t >= tmin), screen.frames.filter((f) => f.t >= tmin - 1 && notRap(f)));
       if (usr && usr.pairs < 120) usr = null;
     }
     let est = null, src = '';
@@ -732,7 +749,12 @@ td, th { border-bottom: 1px solid var(--line); padding: 6px 4px; text-align: lef
     const lx = (L.lineLeft + L.lineRight) / 2, o = { nearFrom: g.rect.w * 0.015 };
     if (screen.segBuf.length) { screen.segBuf.forEach((b) => K.accumulateBarNotes(screen.barAcc, b.segs, b.t, lx, sp, o)); screen.segBuf = []; }
     K.accumulateBarNotes(screen.barAcc, segs, t, lx, sp, o);
-    if (screen.offset != null && now - screen.barGuideAt > 300) { screen.barGuideAt = now; screen.barGuide = K.barNotesToGuide(screen.barAcc, screen.offset); }
+    if (now - screen.barGuideAt > 300) {
+      screen.barGuideAt = now;
+      const bg = K.barNotesToGuide(screen.barAcc, screen.offset == null ? 0 : screen.offset);
+      screen.rap = bg.rap;
+      if (screen.offset != null) screen.barGuide = bg;
+    }
   }
   function addScreenNote(t, m) {
     const N = screen.notes, last = N[N.length - 1];
@@ -746,7 +768,8 @@ td, th { border-bottom: 1px solid var(--line); padding: 6px 4px; text-align: lef
     const old = K.framesToNotes(screen.frames.filter((f) => f.rel != null).map((f) => ({ t: f.t, midi: f.rel + screen.offset })), { minDur: 0.08 });
     if (bars.length < 5) return old;
     // 1本ずつ読めなかった所（読み始めなど）は、現在位置で読んだ音で埋める
-    const covered = (n) => bars.some((b) => b.t - 0.1 < n.t + n.d && n.t < b.t + b.d + 0.1);
+    screen.rap = bars.rap;
+    const covered = (n) => bars.some((b) => b.t - 0.1 < n.t + n.d && n.t < b.t + b.d + 0.1) || bars.rap.some((r) => r[0] - 0.3 < n.t + n.d && n.t < r[1] + 0.3);
     return bars.concat(old.filter((n) => !covered(n))).sort((a, b) => a.t - b.t);
   }
   function screenDebug() {

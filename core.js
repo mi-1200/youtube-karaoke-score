@@ -1007,9 +1007,38 @@
       if (n.rn < minObs || !n.sn || !n.en) continue;
       const t = n.ss / n.sn, d = n.es / n.en - t;
       if (d < 0.03 || d > 20) continue;
-      out.push({ t, d, midi: Math.round(n.rs / n.rn + offset), w: n.rn });
+      out.push({ t, d, midi: Math.round(n.rs / n.rn + offset), w: n.rn, rel: n.rs / n.rn });
     }
     out.sort((a, b) => a.t - b.t);
+    // ラップなどの「高さの無い所」は、同じ高さの短い丸いバーが規則的に並ぶ（例：帯の下の点線）。
+    // 音程の判定には使わないので外し、その範囲を rap として返す
+    const rap = [];
+    if (opts.dropRap !== false) {
+      const runMin = opts.rapMin || 10, keep = new Array(out.length).fill(true);
+      let i = 0;
+      while (i < out.length) {
+        let j = i;
+        while (j + 1 < out.length && out[j + 1].d < 0.2 && out[i].d < 0.2 && Math.abs(out[j + 1].rel - out[i].rel) < 0.2 && out[j + 1].t - (out[j].t + out[j].d) < 0.25) j++;
+        if (j - i + 1 >= runMin && out[j].t + out[j].d - out[i].t >= 1.2) {
+          for (let k = i; k <= j; k++) keep[k] = false;
+          rap.push([out[i].t, out[j].t + out[j].d, out[i].rel]);
+        }
+        i = j + 1;
+      }
+      // 点線の前後・途切れ目に残った同じ高さの点も外す（範囲を広げながら繰り返す）
+      for (let changed = true; changed;) {
+        changed = false;
+        out.forEach((n, k) => {
+          if (!keep[k] || n.d >= 0.4) return;
+          const r = rap.find((x) => Math.abs(x[2] - n.rel) < 0.25 && n.t < x[1] + 0.6 && n.t + n.d > x[0] - 0.6);
+          if (r) { keep[k] = false; r[0] = Math.min(r[0], n.t); r[1] = Math.max(r[1], n.t + n.d); changed = true; }
+        });
+      }
+      rap.sort((x, y) => x[0] - y[0]);
+      for (let k = rap.length - 1; k > 0; k--) if (rap[k][0] - rap[k - 1][1] < 1 && Math.abs(rap[k][2] - rap[k - 1][2]) < 0.25) { rap[k - 1][1] = Math.max(rap[k - 1][1], rap[k][1]); rap.splice(k, 1); }
+      rap.forEach((x) => x.pop());
+      out = out.filter((_, k) => keep[k]);
+    }
     // 同じ高さで重なっているもの（同じバーの読み違い）は1本にまとめる
     const merged = [];
     for (const n of out) {
@@ -1021,7 +1050,9 @@
     out = merged;
     // 重なりは前の音を縮める
     for (let i = 1; i < out.length; i++) if (out[i - 1].t + out[i - 1].d > out[i].t) out[i - 1].d = Math.max(0.03, out[i].t - out[i - 1].t);
-    return out.map((n) => ({ t: n.t, d: n.d, midi: n.midi }));
+    const res = out.map((n) => ({ t: n.t, d: n.d, midi: n.midi }));
+    res.rap = rap;
+    return res;
   }
   // (相対値, 実音) の組から、相対値→MIDI のずれ（オフセット）を推定
   // pairs: [{rel, midi}]（midi は動画のガイド音や歌声）。オクターブ違いを許して最も合うずれを探し、

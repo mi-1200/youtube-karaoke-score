@@ -653,3 +653,19 @@ test('findBarLayout / readBarSegments: yellow (gold) bars and line over a red ba
   assert.deepEqual(segs.map((s) => Math.round(s.rel)), [10, 8, 8, 12], JSON.stringify(segs));
   assert.ok(Math.abs(K.readBarPitch(img, rect, L).rel - 10) < 0.6);
 });
+
+test('barNotesToGuide: drops rap dot rows (same height, short, regular) but keeps melody', () => {
+  const acc = { notes: [] };
+  const add = (t, d, rel) => acc.notes.push({ ss: t * 5, sn: 5, es: (t + d) * 5, en: 5, rs: rel * 5, rn: 5 });
+  let t = 1;
+  [[9, 0.4], [11, 0.12], [11, 0.12], [11, 0.12], [12, 0.5]].forEach(([r, d]) => { add(t, d, r); t += d + 0.05; });
+  const rapStart = t;
+  for (let i = 0; i < 20; i++) { add(t, 0.08, 4.65 + (i % 3) * 0.02); t += 0.1; }
+  const rapEnd = t - 0.02;
+  t += 0.5;
+  [[9, 0.3], [7, 0.3]].forEach(([r, d]) => { add(t, d, r); t += d + 0.05; });
+  const g = K.barNotesToGuide(acc, 50);
+  assert.deepEqual(g.map((n) => n.midi), [59, 61, 61, 61, 62, 59, 57]);
+  assert.equal(g.rap.length, 1);
+  assert.ok(Math.abs(g.rap[0][0] - rapStart) < 0.01 && Math.abs(g.rap[0][1] - rapEnd) < 0.01, JSON.stringify(g.rap));
+});

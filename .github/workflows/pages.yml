@@ -35,7 +35,11 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: Collect site files
-        run: mkdir _site && cp index.html privacy.html core.js version.js _site/
+        run: |
+          mkdir _site && cp index.html privacy.html core.js version.js _site/
+          # 古い core.js / version.js がブラウザに残らないよう、版ごとに URL を変える
+          sed -i "s#src=\"version.js\"#src=\"version.js?v=${GITHUB_SHA::8}\"#; s#src=\"core.js\"#src=\"core.js?v=${GITHUB_SHA::8}\"#" _site/index.html
+          grep -q "core.js?v=" _site/index.html
       - uses: actions/configure-pages@v5
       - uses: actions/upload-pages-artifact@v3
         with:
