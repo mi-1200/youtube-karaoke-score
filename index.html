@@ -424,7 +424,7 @@ td, th { border-bottom: 1px solid var(--line); padding: 6px 4px; text-align: lef
     else if (!(await startMic())) return;
     mode = newMode;
     frames = []; trail = []; liveNotes = new Map();
-    if (screen) { screen.frames = []; screen.notes = []; scrollToStage(); }
+    if (screen) { screen.frames = []; screen.notes = []; screen.barAcc = { notes: [] }; screen.barGuide = null; scrollToStage(); }
     player.seekTo(0, true);
     player.playVideo();
     $('singBtn').disabled = true; $('recGuideBtn').disabled = true; $('tabGuideBtn').disabled = true; $('stopBtn').disabled = false;
@@ -567,7 +567,7 @@ td, th { border-bottom: 1px solid var(--line); padding: 6px 4px; text-align: lef
 
   /* ---------- 画面の音程バー（タブの映像を読む） ---------- */
   let screen = null;
-  function curGuide() { return screen && screen.offset != null ? screen.notes : effGuide; }
+  function curGuide() { return screen && screen.offset != null ? (screen.barGuide && screen.barGuide.length >= 3 ? screen.barGuide : screen.notes) : effGuide; }
   // 歌う区間（ガイドのバーか歌詞がある所）。伴奏だけの所では歌声のバーやテクニックを出さない
   let secCache = { g: null, n: -1, l: null, last: 0, val: null };
   function curSections() {
@@ -593,7 +593,8 @@ td, th { border-bottom: 1px solid var(--line); padding: 6px 4px; text-align: lef
     video.muted = true; video.playsInline = true; video.srcObject = new MediaStream(stream.getVideoTracks());
     try { await video.play(); } catch (e) {}
     screen = { stream, video, canvas: document.createElement('canvas'), layout: null, layoutAt: -1e9, steps: [], useFull: false, missSince: performance.now(),
-      pairs: [], userPairs: [], offset: null, fit: 0, offsetAt: 0, frames: [], notes: [], rel: null, an: null, abuf: null, lastSample: 0 };
+      pairs: [], userPairs: [], offset: null, fit: 0, offsetAt: 0, frames: [], notes: [], rel: null, an: null, abuf: null, lastSample: 0,
+      segPrev: null, segPrevT: 0, segW: 0, speeds: [], barAcc: { notes: [] }, barGuide: null, barGuideAt: 0 };
     screen.ctx = screen.canvas.getContext('2d', { willReadFrequently: true });
     if (stream.getAudioTracks().length) {
       audioCtx = audioCtx || new (window.AudioContext || window.webkitAudioContext)();
@@ -645,6 +646,11 @@ td, th { border-bottom: 1px solid var(--line); padding: 6px 4px; text-align: lef
     screen.lastSample = now;
     const rect = screenRect(); if (!rect) return;
     const g = grab(rect); if (!g) return;
+    // ページがスクロールした直後は、取り込んだ映像と位置がずれるので読まずに待ち、落ち着いたら測り直す
+    if (screen.rectKey != null && (Math.abs(rect.x - screen.rectKey[0]) > 1 || Math.abs(rect.y - screen.rectKey[1]) > 1 || Math.abs(rect.w - screen.rectKey[2]) > 1)) screen.rectMovedAt = now;
+    screen.rectKey = [rect.x, rect.y, rect.w];
+    if (now - (screen.rectMovedAt || -1e9) < 400) { screen.rel = null; return; }
+    if (screen.layout && (screen.rectMovedAt || -1e9) > screen.layoutAt) { screen.layout = null; screen.steps = []; screen.layoutAt = -1e9; }
     // 縦線・帯・半音の高さは、ときどき測り直す（半音の高さは中央値で安定させる）
     if (!screen.layout || now - screen.layoutAt > (screen.layout ? 3000 : 500)) {
       const L = K.findBarLayout(g.img, g.rect);
@@ -672,7 +678,7 @@ td, th { border-bottom: 1px solid var(--line); padding: 6px 4px; text-align: lef
     if (screen.rel != null && userFrame && userFrame.midi != null) {
       screen.userPairs.push({ rel: screen.rel, midi: userFrame.midi }); if (screen.userPairs.length > 3000) screen.userPairs.shift();
     }
-    if (mode === 'sing') screen.frames.push({ t, rel: screen.rel });
+    if (mode === 'sing') { screen.frames.push({ t, rel: screen.rel }); readBarsAhead(g, t, now); }
     if (now - screen.offsetAt > 1500) { screen.offsetAt = now; updateOffset(); }
     if (screen.offset != null && screen.rel != null && mode === 'sing') addScreenNote(t, Math.round(screen.rel + screen.offset));
   }
@@ -693,8 +699,31 @@ td, th { border-bottom: 1px solid var(--line); padding: 6px 4px; text-align: lef
     const changed = screen.offset == null || Math.abs(est.offset - screen.offset) > 0.3;
     screen.offset = est.offset; screen.fit = est.fit; screen.offsetSrc = src; screen.shift = est.shift || 0;
     screen.audFit = aud ? aud.fit : null; screen.usrFit = usr ? usr.fit : null;
-    if (changed) { screen.notes = []; liveNotes = new Map(); liveSum = 0; liveN = 0; screen.frames.forEach((f) => { if (f.rel != null) addScreenNote(f.t, Math.round(f.rel + screen.offset)); }); }
+    if (changed) { screen.barGuideAt = 0; screen.notes = []; liveNotes = new Map(); liveSum = 0; liveN = 0; screen.frames.forEach((f) => { if (f.rel != null) addScreenNote(f.t, Math.round(f.rel + screen.offset)); }); }
     updateScreenStatus();
+  }
+  // 現在位置より右のバーを全部読み、流れる速さから1本ずつの時刻を出す（短いバーも落とさない）
+  function scrollSpeed() {
+    const sp = screen.speeds; if (sp.length < 8) return null;
+    const s = sp.slice().sort((a, b) => a - b), md = s[s.length >> 1];
+    const mad = sp.map((v) => Math.abs(v - md)).sort((a, b) => a - b)[sp.length >> 1];
+    return md > 0 && mad < md * 0.06 ? md : null;
+  }
+  function readBarsAhead(g, t, now) {
+    const L = screen.layout;
+    if (g.img.width !== screen.segW) { screen.segW = g.img.width; screen.speeds = []; screen.segPrev = null; }
+    const segs = K.readBarSegments(g.img, g.rect, L);
+    if (!screen.segPrev) { screen.segPrev = segs; screen.segPrevT = t; }
+    else {
+      const v = K.estimateScrollSpeed(screen.segPrev, segs, t - screen.segPrevT, { maxDx: g.rect.w * 0.5 });
+      // 同じ映像フレームを2回読んだ時（動いていない時）は前の読みを残す
+      if (v > 0) { screen.speeds.push(v); if (screen.speeds.length > 60) screen.speeds.shift(); screen.segPrev = segs; screen.segPrevT = t; }
+      else if (t - screen.segPrevT > 1 || t < screen.segPrevT) { screen.segPrev = segs; screen.segPrevT = t; }
+    }
+    const sp = scrollSpeed();
+    if (!sp) return;
+    K.accumulateBarNotes(screen.barAcc, segs, t, (L.lineLeft + L.lineRight) / 2, sp);
+    if (screen.offset != null && now - screen.barGuideAt > 300) { screen.barGuideAt = now; screen.barGuide = K.barNotesToGuide(screen.barAcc, screen.offset); }
   }
   function addScreenNote(t, m) {
     const N = screen.notes, last = N[N.length - 1];
@@ -704,12 +733,15 @@ td, th { border-bottom: 1px solid var(--line); padding: 6px 4px; text-align: lef
   function buildScreenGuide() {
     updateOffset(true);
     if (screen.offset == null) return null;
+    const bars = K.barNotesToGuide(screen.barAcc, screen.offset);
+    if (bars.length >= 5) return bars;
     return K.framesToNotes(screen.frames.filter((f) => f.rel != null).map((f) => ({ t: f.t, midi: f.rel + screen.offset })), { minDur: 0.08 });
   }
   function screenDebug() {
     if (!screen) return null;
     return { layout: screen.layout, useFull: screen.useFull, steps: screen.steps, offset: screen.offset, fit: screen.fit, offsetSrc: screen.offsetSrc || null,
-      shift: screen.shift || 0, audFit: screen.audFit, usrFit: screen.usrFit,
+      shift: screen.shift || 0, audFit: screen.audFit, usrFit: screen.usrFit, speed: scrollSpeed(), speeds: screen.speeds.length,
+      bars: screen.barAcc.notes.map((n) => [n.sn ? +(n.ss / n.sn).toFixed(3) : null, n.en ? +(n.es / n.en).toFixed(3) : null, +(n.rs / n.rn).toFixed(2), n.rn]),
       pairs: screen.pairs.length, userPairs: screen.userPairs.length, video: [screen.video.videoWidth, screen.video.videoHeight],
       frames: { t: screen.frames.map((f) => +f.t.toFixed(3)), rel: screen.frames.map((f) => (f.rel == null ? null : +f.rel.toFixed(2))) } };
   }

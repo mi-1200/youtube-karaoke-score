@@ -24,7 +24,8 @@ const check = (n, ok, info) => { console.log((ok ? 'PASS ' : 'FAIL ') + n + (inf
   await page.evaluate(() => {
     const MEL = []; let t = 0.6;
     const seq = [62, 64, 66, 67, 69, 67, 66, 64, 62, 69, 71, 69, 67, 66, 64, 62, 64, 66, 67, 64];
-    seq.forEach((m, i) => { const d = i % 4 === 3 ? 0.9 : 0.45; MEL.push({ t, d, midi: m }); t += d + 0.08; });
+    // 短いバー（0.12秒）も混ぜる
+    seq.forEach((m, i) => { const d = i % 4 === 3 ? 0.9 : i % 4 === 1 ? 0.12 : 0.45; MEL.push({ t, d, midi: m }); t += d + 0.08; });
     window.__MEL = MEL;
     navigator.mediaDevices.getDisplayMedia = async () => {
       const cv = document.createElement('canvas'); cv.width = innerWidth; cv.height = innerHeight;
@@ -98,14 +99,17 @@ const check = (n, ok, info) => { console.log((ok ? 'PASS ' : 'FAIL ') + n + (inf
     let ok = 0; const notes = s.guide;
     for (const n of notes) { const mid = n.t + n.d / 2; const m = window.__MEL.find((x) => x.t <= mid && mid < x.t + x.d); if (m && m.midi === n.midi) ok++; }
     const covered = window.__MEL.filter((m) => m.t < 12.5 && notes.some((n) => n.midi === m.midi && Math.abs(n.t - m.t) < 0.15)).length;
-    return { notes: notes.length, exact: ok, covered, melInRange: window.__MEL.filter((m) => m.t < 12.5).length, sample: notes.slice(0, 6).map((n) => n.midi + '@' + n.t.toFixed(2)) };
+    const shorts = window.__MEL.filter((m) => m.d < 0.2 && m.t < 12.5); const shortCovered = shorts.filter((m) => notes.some((n) => n.midi === m.midi && Math.abs(n.t - m.t) < 0.08 && Math.abs(n.d - m.d) < 0.08)).length;
+    return { shortInRange: shorts.length, shortCovered, notes: notes.length, exact: ok, covered, melInRange: window.__MEL.filter((m) => m.t < 12.5).length, sample: notes.slice(0, 6).map((n) => n.midi + '@' + n.t.toFixed(2)) };
   });
   check('saved guide matches the on-screen melody', acc.exact >= acc.notes * 0.8 && acc.covered >= acc.melInRange * 0.8, acc);
+  check('short bars captured', acc.shortCovered === acc.shortInRange && acc.shortInRange > 0, acc);
   const [dl] = await Promise.all([page.waitForEvent('download'), page.click('#exportBtn')]);
   const exp = JSON.parse(require('fs').readFileSync(await dl.path(), 'utf8'));
   check('export omits guide read from the screen', exp.guide === null && exp.guideSource === '', { guide: exp.guide && exp.guide.length, src: exp.guideSource });
   const dbg = await page.evaluate(() => JSON.parse(localStorage.getItem('utascore.debug.v1') || '[]')[0]);
   check('debug log has screen info', dbg && dbg.screen && dbg.screen.layout && dbg.screen.frames.t.length > 50, dbg && dbg.screen && { offset: dbg.screen.offset, fit: dbg.screen.fit, src: dbg.screen.offsetSrc, step: dbg.screen.layout && dbg.screen.layout.step });
+  if (process.env.DBG2) console.log(JSON.stringify({ speed: dbg.screen.speed, n: dbg.screen.speeds, bars: dbg.screen.bars.slice(0, 40), guide: await page.evaluate(() => JSON.parse(localStorage.getItem('utascore.songs.v1'))['dQw4w9WgXcQ'].guide.map((n) => [+n.t.toFixed(2), +n.d.toFixed(2), n.midi])), mel: await page.evaluate(() => window.__MEL.map((n) => [+n.t.toFixed(2), n.d, n.midi])) }));
   check('no page errors', errors.length === 0, errors);
   await browser.close();
   console.log(failed ? failed + ' FAILED' : 'ALL PASSED');

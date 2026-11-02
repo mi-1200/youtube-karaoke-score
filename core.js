@@ -885,6 +885,108 @@
     }
     return null;
   }
+  // 現在位置より右に見えているバーを全部読む（短いバーも1本ずつ拾うため）。
+  // 戻り値: [{x0, x1, rel, clipL, clipR}]（x は画素、rel は帯の下端からの半音数。clipL/R は端で切れているか）
+  function readBarSegments(img, rect, layout) {
+    const { data, width } = img;
+    const xa = Math.round(layout.lineRight + Math.max(2, rect.w * 0.003));
+    const xb = Math.min(width - 1, Math.round(rect.x + rect.w * 0.995));
+    const band = layout.bottom - layout.top, tolY = Math.max(1.5, layout.step * 0.6);
+    const minW = Math.max(2, layout.step * 0.4);
+    const segs = [];
+    let cur = null, miss = 0;
+    const close = () => {
+      if (cur && cur.x1 - cur.x0 + 1 >= minW) {
+        const y = median(cur.ys);
+        segs.push({ x0: cur.x0, x1: cur.x1, rel: (layout.bottom - y) / layout.step, clipL: cur.x0 <= xa + 1, clipR: false });
+      }
+      cur = null; miss = 0;
+    };
+    for (let x = xa; x <= xb; x++) {
+      let n = 0, lo = -1, hi = -1;
+      for (let y = layout.top; y <= layout.bottom; y++) {
+        const i = (y * width + x) * 4;
+        if (isBarPink(data[i], data[i + 1], data[i + 2])) { n++; if (lo < 0) lo = y; hi = y; }
+      }
+      const ok = n >= 2 && n < band * 0.5;
+      const yc = ok ? (lo + hi) / 2 : null;
+      if (ok && cur && Math.abs(yc - cur.yRef) <= tolY) { cur.x1 = x; cur.ys.push(yc); if (cur.ys.length <= 6) cur.yRef = median(cur.ys); miss = 0; continue; }
+      if (ok) { close(); cur = { x0: x, x1: x, ys: [yc], yRef: yc }; continue; }
+      if (cur && ++miss > 1) close();
+    }
+    if (cur) { const keep = cur; close(); if (segs.length && segs[segs.length - 1].x0 === keep.x0) segs[segs.length - 1].clipR = keep.x1 >= xb - 1; }
+    return segs;
+  }
+  // 前のフレームと今のフレームのバーを照らし合わせて、流れる速さ（画素/秒）を推定。分からなければ null
+  function estimateScrollSpeed(prev, cur, dt, opts) {
+    opts = opts || {};
+    if (!prev || !cur || !(dt > 0.005)) return null;
+    const maxDx = opts.maxDx || 400;
+    const votes = new Map();
+    for (const c of cur) {
+      if (c.clipL) continue;
+      for (const p of prev) {
+        if (p.clipL || Math.abs(p.rel - c.rel) > 0.4) continue;
+        const dx = p.x0 - c.x0;
+        if (dx < 0 || dx > maxDx) continue;
+        if (!p.clipR && !c.clipR && Math.abs((p.x1 - p.x0) - (c.x1 - c.x0)) > 3) continue;
+        const k = Math.round(dx); votes.set(k, (votes.get(k) || 0) + 1);
+      }
+    }
+    let best = null, bv = 0;
+    for (const [k, v] of votes) {
+      const s = v + (votes.get(k - 1) || 0) * 0.5 + (votes.get(k + 1) || 0) * 0.5;
+      if (s > bv) { bv = s; best = k; }
+    }
+    if (best == null || bv < 2) return null;
+    // 近い値の重み付き平均で端数まで出す
+    let sw = 0, sx = 0;
+    for (const k of [best - 1, best, best + 1]) { const v = votes.get(k) || 0; sw += v; sx += v * k; }
+    return (sx / sw) / dt;
+  }
+  // 各フレームで読んだバーを、時刻（バーが現在位置に来る時刻）に直して1本ずつまとめる
+  // acc: {notes: []} を使い回す。t: そのフレームの曲の時刻, lineX: 現在位置の x, v: 速さ（画素/秒）
+  function accumulateBarNotes(acc, segs, t, lineX, v) {
+    if (!(v > 0)) return acc;
+    const N = acc.notes;
+    for (const s of segs) {
+      const st = s.clipL ? null : t + (s.x0 - lineX) / v;
+      const en = s.clipR ? null : t + (s.x1 + 1 - lineX) / v;
+      let hit = null;
+      for (let k = N.length - 1; k >= 0 && k >= N.length - 60; k--) {
+        const n = N[k];
+        if (Math.abs(n.rs / n.rn - s.rel) > 0.5) continue;
+        if (st != null && n.sn && Math.abs(n.ss / n.sn - st) < 0.08) { hit = n; break; }
+        if (st == null && en != null && n.en && Math.abs(n.es / n.en - en) < 0.08) { hit = n; break; }
+      }
+      if (!hit) {
+        if (st == null) continue; // 出だしが見えていないバーからは新しく作らない
+        hit = { ss: 0, sn: 0, es: 0, en: 0, rs: 0, rn: 0 };
+        let k = N.length; while (k > 0 && N[k - 1].ss / N[k - 1].sn > st) k--;
+        N.splice(k, 0, hit);
+      }
+      if (st != null) { hit.ss += st; hit.sn++; }
+      if (en != null) { hit.es += en; hit.en++; }
+      hit.rs += s.rel; hit.rn++;
+    }
+    return acc;
+  }
+  // まとめたバー → ガイドの音符。offset: 相対値→MIDI のずれ
+  function barNotesToGuide(acc, offset, opts) {
+    opts = opts || {};
+    const minObs = opts.minObs || 2;
+    const out = [];
+    for (const n of acc.notes) {
+      if (n.rn < minObs || !n.sn || !n.en) continue;
+      const t = n.ss / n.sn, d = n.es / n.en - t;
+      if (d < 0.03 || d > 20) continue;
+      out.push({ t, d, midi: Math.round(n.rs / n.rn + offset) });
+    }
+    out.sort((a, b) => a.t - b.t);
+    // 重なりは前の音を縮める
+    for (let i = 1; i < out.length; i++) if (out[i - 1].t + out[i - 1].d > out[i].t) out[i - 1].d = Math.max(0.03, out[i].t - out[i - 1].t);
+    return out;
+  }
   // (相対値, 実音) の組から、相対値→MIDI のずれ（オフセット）を推定
   // pairs: [{rel, midi}]（midi は動画のガイド音や歌声）。オクターブ違いを許して最も合うずれを探し、
   // 最後にオクターブを midi の中央値に寄せる。戻り値 {offset, fit(0-1)} または null
@@ -1034,7 +1136,7 @@
   const api = {
     NOTE_NAMES, TOLERANCE, clamp, freqToMidi, midiToFreq, midiName, parseVideoId, detectPitch,
     parseLrc, formatStamp, parseMidi, toMonophonic, framesToNotes, findNote, foldDiff,
-    pitchCredit, scorePerformance, detectTechniques, techniqueBonus, detectMelody, findBarLayout, readBarPitch, estimateBarOffset, estimateBarAlignment, singingSections, inSections, maskFrames, judgeChunks, pitchTimeline,
+    pitchCredit, scorePerformance, detectTechniques, techniqueBonus, detectMelody, findBarLayout, readBarPitch, estimateBarOffset, estimateBarAlignment, singingSections, inSections, maskFrames, judgeChunks, pitchTimeline, readBarSegments, estimateScrollSpeed, accumulateBarNotes, barNotesToGuide,
   };
   if (typeof module !== 'undefined' && module.exports) module.exports = api;
   else root.KaraCore = api;

@@ -588,3 +588,47 @@ test('pitchTimeline: splits the song into segments with accuracy and interludes'
   assert.ok(sing.filter((s) => s.t0 >= 61).every((s) => s.acc > 85));
   assert.deepEqual(K.scorePerformance(fr, null, {}).timeline, undefined);
 });
+
+test('readBarSegments / estimateScrollSpeed / accumulateBarNotes: recovers short bars from a scrolling screen', () => {
+  const w = 960, h = 130, top = 10, bottom = 110, step = 4, lineX = 317, pps = 190;
+  const MEL = [];
+  let t = 1;
+  // 長い音・短い音・同じ高さの短い音の連続（隙間あり）を混ぜる
+  const seq = [[9, 0.6], [11, 0.12], [11, 0.12], [12, 0.1], [9, 0.5], [7, 0.08], [9, 0.15], [14, 0.9], [12, 0.11], [11, 0.11], [9, 0.4]];
+  for (const [r, d] of seq) { MEL.push({ t, d, rel: r }); t += d + 0.05; }
+  const frame = (now) => {
+    const data = new Uint8ClampedArray(w * h * 4);
+    const set = (x, y, c) => { const i = (y * w + x) * 4; data[i] = c[0]; data[i + 1] = c[1]; data[i + 2] = c[2]; data[i + 3] = 255; };
+    for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) set(x, y, [70, 70, 75]);
+    for (let k = 2; k < 25; k += 2) for (let x = 0; x < w; x++) set(x, bottom - k * step, [175, 175, 175]);
+    for (const n of MEL) {
+      const xa = Math.round(lineX + (n.t - now) * pps), xb = Math.round(lineX + (n.t + n.d - now) * pps) - 1;
+      for (let x = Math.max(0, xa); x <= Math.min(w - 1, xb); x++) for (let dy = -2; dy <= 2; dy++) set(x, bottom - n.rel * step + dy, x < lineX ? [200, 200, 200] : [255, 90, 170]);
+    }
+    for (let y = top; y <= bottom; y++) for (let x = lineX - 1; x <= lineX + 1; x++) set(x, y, [255, 90, 170]);
+    return { data, width: w, height: h };
+  };
+  const rect = { x: 0, y: 0, w, h: 540 };
+  const L = K.findBarLayout(frame(0), rect);
+  assert.ok(L, 'layout');
+  const acc = { notes: [] };
+  let prev = null, prevT = 0;
+  const speeds = [];
+  for (let now = -2; now < t + 0.5; now += 1 / 30) {
+    const segs = K.readBarSegments(frame(now), rect, L);
+    const v = K.estimateScrollSpeed(prev, segs, now - prevT);
+    if (v) speeds.push(v);
+    prev = segs; prevT = now;
+    if (speeds.length >= 5) K.accumulateBarNotes(acc, segs, now, (L.lineLeft + L.lineRight) / 2, median(speeds));
+  }
+  const sp = median(speeds);
+  assert.ok(Math.abs(sp - pps) < 4, 'speed ' + sp);
+  const g = K.barNotesToGuide(acc, 50);
+  assert.equal(g.length, MEL.length, JSON.stringify(g.map((n) => n.midi + '@' + n.t.toFixed(2) + '+' + n.d.toFixed(2))));
+  g.forEach((n, i) => {
+    assert.equal(n.midi, MEL[i].rel + 50);
+    assert.ok(Math.abs(n.t - MEL[i].t) < 0.03, 't ' + n.t + ' vs ' + MEL[i].t);
+    assert.ok(Math.abs(n.d - MEL[i].d) < 0.03, 'd ' + n.d + ' vs ' + MEL[i].d);
+  });
+  function median(a) { const s = a.slice().sort((x, y) => x - y); return s[s.length >> 1]; }
+});
