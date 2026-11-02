@@ -1,0 +1,4 @@
+node_modules/
+e2e/shots/
+e2e/test.mid
+e2e/export.json
