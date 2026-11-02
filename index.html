@@ -713,7 +713,7 @@ td, th { border-bottom: 1px solid var(--line); padding: 6px 4px; text-align: lef
   }
 
   /* ---------- メインループ ---------- */
-  let liveSum = 0, liveN = 0;
+  let liveSum = 0, liveN = 0, liveJudgeAt = 0;
   function tolerance() { return K.TOLERANCE[settings.tolerance] || K.TOLERANCE.normal; }
   function liveNoteHit(ln, n) {
     if (ln.vals.length < 2) return false;
@@ -766,27 +766,19 @@ td, th { border-bottom: 1px solid var(--line); padding: 6px 4px; text-align: lef
       trail.push({ t: ft, midi });
       if (trail.length > 600) trail.splice(0, trail.length - 600);
       if (mode !== 'idle') frames.push({ t: ft, midi, rms });
-      if (mode === 'sing' && G.length) {
-        const idx = K.findNote(G, ft + userShift());
-        if (idx >= 0) {
-          // バー1本ごとの判定（出だしを除いた歌声の中央値で見る）。表示用の％は、終わったバーの的中率
-          const note = G[idx], ln = liveNotes.get(idx) || { vals: [], n: 0, done: false };
-          ln.n++;
-          if (midi != null && ft + userShift() - note.t >= Math.min(0.12, note.d * 0.3)) ln.vals.push(note.midi + K.foldDiff(midi, note.midi));
-          liveNotes.set(idx, ln);
-        }
-      }
     }
     if (mode === 'sing' && playing) updateLiveTech(ft); else if (mode !== 'sing') liveTech = [];
-    if (mode === 'sing' && G.length) {
-      // 終わったバーを確定して的中率を更新
-      for (const [i, ln] of liveNotes) {
-        const n = G[i];
-        if (!ln.done && n && n.t + n.d < ft + userShift()) { ln.done = true; ln.hit = liveNoteHit(ln, n); liveN++; if (ln.hit) liveSum++; }
-      }
+    if (mode === 'sing' && G.length && performance.now() - liveJudgeAt > 500) {
+      // 終わった区切りの的中率（時間の割合）。採点と同じ判定を使う
+      liveJudgeAt = performance.now();
+      const sh = userShift();
+      const ch = K.judgeChunks(K.maskFrames(frames.map((f) => ({ ...f, t: f.t + sh })), curSections()), G, tolerance(), { until: ft + sh });
+      let hd = 0, td = 0;
+      for (const c of ch) { td += c.t1 - c.t0; if (c.hit) hd += c.t1 - c.t0; }
+      liveN = td > 0 ? 1 : 0; liveSum = td > 0 ? hd / td : 0;
     }
     if (mode === 'sing' && G.length && liveN) {
-      $('liveAcc').textContent = '音程 ' + Math.round(100 * liveSum / liveN) + '%';
+      $('liveAcc').textContent = '音程 ' + Math.round(100 * liveSum) + '%';
     } else if (mode !== 'sing') { $('liveAcc').textContent = ''; liveSum = 0; liveN = 0; }
 
     draw(t);
@@ -829,34 +821,46 @@ td, th { border-bottom: 1px solid var(--line); padding: 6px 4px; text-align: lef
       ctx.beginPath(); ctx.moveTo(0, Y(m)); ctx.lineTo(W, Y(m)); ctx.stroke();
       if (m % 12 === 0) { ctx.fillStyle = 'rgba(255,255,255,.35)'; ctx.font = '10px sans-serif'; ctx.fillText(K.midiName(m), 4, Y(m) - 2); }
     }
-    // ガイドのバー
-    effGuide.forEach((n, i) => {
+    // ガイドのバー（灰色）
+    const visG = effGuide.filter((n) => n.t + n.d >= t - past - 0.5 && n.t <= t + future);
+    for (const n of visG) {
       const xa = X(n.t), xb = X(n.t + n.d);
-      if (xb < 0 || xa > W) return;
-      const ln = liveNotes.get(i);
-      let col = 'rgba(160,170,210,.35)';
-      if (mode === 'sing' && ln && ln.done) col = ln.hit ? 'rgba(255,213,74,.9)' : 'rgba(120,120,150,.25)';
-      else if (n.t <= t && t < n.t + n.d) col = 'rgba(200,210,255,.6)';
-      ctx.fillStyle = col;
+      ctx.fillStyle = n.t <= t && t < n.t + n.d ? 'rgba(200,210,255,.55)' : 'rgba(160,170,210,.35)';
       roundRect(xa, Y(n.midi) - rowH / 2, Math.max(2, xb - xa - 1), rowH, rowH / 2);
-    });
-    // 歌声：細かい揺れをまとめて、カラオケのようなバーで表示する
+    }
     const sh = userShift();
     const secs = curSections();
-    for (const b of voiceBars(K.maskFrames(trail.filter((f) => f.t >= t - past - 0.5), secs, sh))) {
-      const tm = (b.t0 + b.t1) / 2 + sh;
-      let m = b.midi, col = '#5ad1ff';
-      const gi = effGuide.length ? K.findNote(effGuide, tm) : -1;
-      if (gi >= 0) {
-        const d = K.foldDiff(b.midi, effGuide[gi].midi);
-        m = effGuide[gi].midi + Math.round(d);
-        const avgD = K.foldDiff(b.sum / b.n, effGuide[gi].midi);
-        col = K.pitchCredit(Math.abs(avgD), tolerance()) >= 0.5 ? '#4be08a' : '#ff9f4a';
-      } else { while (m < viewLo) m += 12; while (m > viewHi) m -= 12; }
-      const xa = Math.max(0, X(b.t0 + sh)), xb = X(b.t1 + sh);
-      if (xb < 0) continue;
-      ctx.fillStyle = col;
-      roundRect(xa, Y(m) - rowH * 0.32, Math.max(3, xb - xa), rowH * 0.64, rowH * 0.32);
+    const recentTrail = K.maskFrames(trail.filter((f) => f.t >= t - past - 1), secs, sh);
+    if (visG.length) {
+      // 区切りごとの判定：合っていれば金色、外れていれば歌った高さに赤いバー
+      const ch = K.judgeChunks(recentTrail.map((f) => ({ ...f, t: f.t + sh })), visG, tolerance(), { until: t });
+      for (const c of ch) {
+        if (c.sung == null) continue;
+        const xa = Math.max(0, X(c.showT0)), xb = X(c.t1);
+        if (xb < 0) continue;
+        if (c.hit) { ctx.fillStyle = 'rgba(255,213,74,.95)'; roundRect(xa, Y(c.target) - rowH / 2, Math.max(2, xb - xa), rowH, rowH / 2); }
+        else { ctx.fillStyle = 'rgba(255,70,70,.9)'; const m = Math.round(c.sung); roundRect(xa, Y(m) - rowH * 0.4, Math.max(2, xb - xa), rowH * 0.8, rowH * 0.4); }
+      }
+    } else {
+      // ガイドが無いときは、歌声を半音単位のバーで表示
+      for (const b of voiceBars(recentTrail)) {
+        let m = b.midi;
+        while (m < viewLo) m += 12; while (m > viewHi) m -= 12;
+        const xa = Math.max(0, X(b.t0 + sh)), xb = X(b.t1 + sh);
+        if (xb < 0) continue;
+        ctx.fillStyle = '#5ad1ff';
+        roundRect(xa, Y(m) - rowH * 0.32, Math.max(3, xb - xa), rowH * 0.64, rowH * 0.32);
+      }
+    }
+    // 今の声の高さ（現在位置の印）
+    const lastF = recentTrail[recentTrail.length - 1];
+    if (lastF && lastF.midi != null && playing && t - (lastF.t + sh) < 0.2) {
+      let m = lastF.midi;
+      const gi = visG.length ? K.findNote(visG, t) : -1;
+      if (gi >= 0) m = visG[gi].midi + K.foldDiff(m, visG[gi].midi); else { while (m < viewLo) m += 12; while (m > viewHi) m -= 12; }
+      const ok = gi >= 0 ? K.pitchCredit(Math.abs(m - visG[gi].midi), tolerance()) >= 0.5 : null;
+      ctx.fillStyle = ok === false ? '#ff4646' : ok ? '#ffd54a' : '#5ad1ff';
+      ctx.beginPath(); ctx.moveTo(x0 + 2, Y(m)); ctx.lineTo(x0 + 12, Y(m) - 6); ctx.lineTo(x0 + 12, Y(m) + 6); ctx.closePath(); ctx.fill();
     }
     // テクニックの表示
     ctx.font = 'bold 12px sans-serif'; ctx.textAlign = 'center';

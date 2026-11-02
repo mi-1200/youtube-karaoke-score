@@ -624,34 +624,24 @@
     if (res.hasGuide) {
       const g = guide.map((n) => ({ t: n.t, d: n.d, midi: n.midi + transpose }));
       const tol = TOLERANCE[opts.tolerance] || TOLERANCE.normal;
-      // 実際のカラオケのように「音程バー1本ごと」に判定する：
-      // 出だし（しゃくり等）を除いた区間の歌声の中央値が、バーの高さにどれだけ近いか
-      const per = g.map(() => ({ vals: [], n: 0 }));
+      // 実際のカラオケのように音程バーごとに判定する。長いバーは短い区切り（チャンク）に分けて、
+      // 一部だけ合っていてもバー全体が合格にならないようにする
       let cn = 0, sungIn = 0;
       for (const f of fr) {
         const idx = findNote(g, f.t);
         if (idx < 0) continue;
-        const note = g[idx];
-        if (f.t - note.t < 0.08 && f.midi == null) continue; // 出だしの息継ぎは大目に見る
-        per[idx].n++; cn++;
-        if (f.midi != null) {
-          sungIn++;
-          if (f.t - note.t >= Math.min(0.12, note.d * 0.3)) per[idx].vals.push(f.midi);
-        }
+        if (f.t - g[idx].t < 0.08 && f.midi == null) continue;
+        cn++; if (f.midi != null) sungIn++;
       }
+      const chunks = judgeChunks(fr, g, tol);
+      const per = g.map(() => ({ c: 0, d: 0 }));
       let wsum = 0, csum = 0;
+      for (const c of chunks) { const d = c.t1 - c.t0; per[c.note].c += c.credit * d; per[c.note].d += d; wsum += d; csum += c.credit * d; }
       res.notes = g.map((n, i) => {
-        const P = per[i];
-        let credit = 0, dev = null;
-        if (P.vals.length >= 2) {
-          const ref = n.midi, folded = P.vals.map((m) => ref + foldDiff(m, ref));
-          dev = median(folded) - ref;
-          const coverage = clamp((P.vals.length / Math.max(1, P.n)) / 0.5, 0, 1); // 半分以上声が出ていれば満額
-          credit = pitchCredit(Math.abs(dev), tol) * coverage;
-        }
-        wsum += n.d; csum += credit * n.d;
-        return { ...n, credit, dev, hit: credit >= 0.5 };
+        const credit = per[i].d ? per[i].c / per[i].d : 0;
+        return { ...n, credit, hit: credit >= 0.5 };
       });
+      res.chunks = chunks;
       pitch = wsum ? csum / wsum : 0;
       participation = cn ? clamp(sungIn / cn / 0.5, 0, 1) : 0;
       // リズム：音の出だしと歌い出しのずれ
@@ -962,10 +952,54 @@
     return frames.map((f) => (f.midi != null && !inSections(sections, f.t + shift) ? { ...f, midi: null } : f));
   }
 
+  /* ---------- 音程バーの区切り判定 ---------- */
+  // 各バーを、出だし（しゃくり等）を除いて最大 0.35 秒ごとに区切り、区切りごとに歌声の中央値で判定する。
+  // 戻り値: [{note, t0, t1, target, sung(オクターブを合わせた歌声の高さ|null), dev, credit, hit}]
+  // opts.until: これより後に終わる区切りは返さない（歌唱中の表示用）
+  function judgeChunks(frames, guide, tol, opts) {
+    opts = opts || {};
+    tol = tol || TOLERANCE.normal;
+    const CH = opts.chunk || 0.35, until = opts.until == null ? Infinity : opts.until;
+    const fr = frames;
+    const out = [];
+    // 区切りを作る
+    const chunks = [];
+    guide.forEach((n, i) => {
+      if (n.t + n.d > until + CH) return;
+      const att = Math.min(0.12, n.d * 0.3), start = n.t + att, len = n.t + n.d - start;
+      const k = Math.max(1, Math.round(len / CH));
+      for (let j = 0; j < k; j++) chunks.push({ note: i, t0: start + len * j / k, t1: start + len * (j + 1) / k, target: n.midi, vals: [], n: 0, show0: j === 0 ? n.t : null });
+    });
+    if (!chunks.length) return out;
+    // フレームを区切りに振り分け（時刻順の2本指）
+    const sorted = fr[0] && fr.length > 1 && fr[1].t < fr[0].t ? fr.slice().sort((a, b) => a.t - b.t) : fr;
+    let ci = 0;
+    for (const f of sorted) {
+      while (ci < chunks.length && chunks[ci].t1 <= f.t) ci++;
+      if (ci >= chunks.length) break;
+      // 区切りは時刻順だが重なる場合があるので、近くを確認
+      for (let k = ci; k < chunks.length && chunks[k].t0 <= f.t; k++) {
+        const c = chunks[k];
+        if (f.t >= c.t0 && f.t < c.t1) { c.n++; if (f.midi != null) c.vals.push(c.target + foldDiff(f.midi, c.target)); }
+      }
+    }
+    for (const c of chunks) {
+      if (c.t1 > until) continue;
+      let sung = null, dev = null, credit = 0;
+      if (c.vals.length >= 2) {
+        sung = median(c.vals); dev = sung - c.target;
+        const coverage = clamp((c.vals.length / Math.max(1, c.n)) / 0.5, 0, 1);
+        credit = pitchCredit(Math.abs(dev), tol) * coverage;
+      }
+      out.push({ note: c.note, t0: c.t0, t1: c.t1, showT0: c.show0 == null ? c.t0 : c.show0, target: c.target, sung, dev, credit, hit: credit >= 0.5 });
+    }
+    return out;
+  }
+
   const api = {
     NOTE_NAMES, TOLERANCE, clamp, freqToMidi, midiToFreq, midiName, parseVideoId, detectPitch,
     parseLrc, formatStamp, parseMidi, toMonophonic, framesToNotes, findNote, foldDiff,
-    pitchCredit, scorePerformance, detectTechniques, techniqueBonus, detectMelody, findBarLayout, readBarPitch, estimateBarOffset, estimateBarAlignment, singingSections, inSections, maskFrames,
+    pitchCredit, scorePerformance, detectTechniques, techniqueBonus, detectMelody, findBarLayout, readBarPitch, estimateBarOffset, estimateBarAlignment, singingSections, inSections, maskFrames, judgeChunks,
   };
   if (typeof module !== 'undefined' && module.exports) module.exports = api;
   else root.KaraCore = api;

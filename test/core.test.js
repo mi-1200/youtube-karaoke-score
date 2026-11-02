@@ -556,3 +556,18 @@ test('scorePerformance: tolerance levels (easy >= normal >= strict)', () => {
   const e = sc('easy'), n = sc('normal'), st = sc('strict');
   assert.ok(e >= n && n >= st && e > st, JSON.stringify({ e, n, st }));
 });
+
+test('judgeChunks: a long bar is judged in parts (partly right is not all right)', () => {
+  const guide = [{ t: 1, d: 2, midi: 60 }];
+  const fr = [];
+  for (let t = 0.9; t < 3.1; t += 1 / 60) fr.push({ t, midi: t < 2 ? 60.1 : 62.5, rms: 0.05 }); // 前半は正しく、後半は2.5半音ずれ
+  const ch = K.judgeChunks(fr, guide, K.TOLERANCE.normal);
+  assert.ok(ch.length >= 4, 'chunks ' + ch.length);
+  const first = ch.filter((c) => c.t1 <= 2), second = ch.filter((c) => c.t0 >= 2.05);
+  assert.ok(first.every((c) => c.hit), JSON.stringify(first));
+  assert.ok(second.every((c) => !c.hit && Math.abs(c.sung - 62.5) < 0.2), JSON.stringify(second));
+  const r = K.scorePerformance(fr, guide, {});
+  assert.ok(r.items.pitch.value > 35 && r.items.pitch.value < 65, 'pitch ' + r.items.pitch.value);
+  // 歌唱中の表示用：until より後に終わる区切りは返さない
+  assert.ok(K.judgeChunks(fr, guide, null, { until: 1.6 }).every((c) => c.t1 <= 1.6));
+});
