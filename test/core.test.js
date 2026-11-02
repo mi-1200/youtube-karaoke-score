@@ -536,3 +536,16 @@ test('findBarLayout / readBarPitch / estimateBarOffset: reads a synthetic pitch-
   assert.ok(est && Math.abs(est.offset - 57) < 0.3, JSON.stringify(est));
   assert.equal(K.estimateBarOffset(pairs.slice(0, 5)), null);
 });
+
+test('singingSections / maskFrames: drop voice outside sung parts', () => {
+  const guide = [{ t: 10, d: 1 }, { t: 11.2, d: 0.5 }, { t: 30, d: 2 }];
+  const sec = K.singingSections(guide, null);
+  assert.deepEqual(sec.map((v) => v.map((x) => +x.toFixed(2))), [[9.6, 12.2], [29.6, 32.5]]);
+  assert.ok(K.inSections(sec, 10.5) && !K.inSections(sec, 20) && !K.inSections(sec, 5));
+  const fr = [{ t: 5, midi: 60 }, { t: 10.5, midi: 62 }, { t: 20, midi: 64 }, { t: 31, midi: null }];
+  assert.deepEqual(K.maskFrames(fr, sec).map((f) => f.midi), [null, 62, null, null]);
+  const ly = K.singingSections(null, [{ t: 15, text: 'あ' }, { t: 18, text: '' }, { t: 40, text: 'い' }]);
+  assert.ok(K.inSections(ly, 16) && !K.inSections(ly, 19) && K.inSections(ly, 41));
+  assert.equal(K.singingSections(null, null), null);
+  assert.equal(K.maskFrames(fr, null), fr);
+});

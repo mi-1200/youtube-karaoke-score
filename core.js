@@ -339,8 +339,9 @@
     bridge: 0.07,         // これ以下の途切れはつなぐ（秒）
     stableWin: 0.15,      // 「音が落ち着いた」とみなす長さ（秒）
     stableRange: 0.8,     // その間の上下幅（半音）
-    shakuriRise: 0.9,     // しゃくり：下から上がる幅（半音）
-    shakuriMin: 0.05, shakuriMax: 0.3, shakuriLook: 0.4,
+    shakuriRise: 1.0,     // しゃくり：下から上がる幅（半音）
+    shakuriMin: 0.09, shakuriMax: 0.3, shakuriLook: 0.4,
+    shakuriHold: 0.2,     // しゃくりの後に音を保つ長さ（秒）。実際のカラオケの体感（1曲20〜30回）に合わせた値
     kobushiRise: 0.7,     // こぶし：保っている音から上に跳ねる幅（半音）
     kobushiMin: 0.06, kobushiMax: 0.3, kobushiTop: 0.15,
     fallDrop: 1.5,        // フォール：音の終わりで下がる幅（半音）
@@ -448,6 +449,11 @@
         let lastSh = -1e9;
         for (let i = a; i + ST <= b; i++) {
           if (!isStable(i) || isStable(i - 1)) continue;
+          const HD = Math.round(P.shakuriHold / dt);
+          if (i + HD > b) continue;
+          let hmx = -1e9, hmn = 1e9;
+          for (let k = i; k <= i + HD; k++) { if (p[k] > hmx) hmx = p[k]; if (p[k] < hmn) hmn = p[k]; }
+          if (hmx - hmn > P.stableRange) continue;
           const target = medianRange(p, i, i + ST);
           let k = i, low = i;
           const look = Math.round(P.shakuriLook / dt);
@@ -902,10 +908,39 @@
     return best;
   }
 
+  /* ---------- 歌う区間（伴奏だけの所を除く） ---------- */
+  // guide: [{t,d}]（あれば優先）、lyrics: [{t,text}]。どちらも無ければ null（全区間を対象）
+  function singingSections(guide, lyrics, opts) {
+    opts = opts || {};
+    const pre = opts.pre == null ? 0.4 : opts.pre, post = opts.post == null ? 0.5 : opts.post;
+    let iv = [];
+    if (guide && guide.length) iv = guide.map((n) => [n.t - pre, n.t + n.d + post]);
+    else if (lyrics && lyrics.length) {
+      const L = lyrics.filter((l) => l.text && l.text.trim());
+      iv = L.map((l, i) => { const nx = lyrics.find((x) => x.t > l.t); return [l.t - 0.3, nx ? Math.min(nx.t, l.t + 10) : l.t + 6]; });
+    } else return null;
+    iv.sort((x, y) => x[0] - y[0]);
+    const out = [];
+    for (const v of iv) { const last = out[out.length - 1]; if (last && v[0] <= last[1]) last[1] = Math.max(last[1], v[1]); else out.push(v.slice()); }
+    return out;
+  }
+  function inSections(sections, t) {
+    if (!sections) return true;
+    let lo = 0, hi = sections.length - 1;
+    while (lo <= hi) { const m = (lo + hi) >> 1; if (t < sections[m][0]) hi = m - 1; else if (t > sections[m][1]) lo = m + 1; else return true; }
+    return false;
+  }
+  // 区間外のフレームは無声（midi=null）として扱う
+  function maskFrames(frames, sections, shift) {
+    if (!sections) return frames;
+    shift = shift || 0;
+    return frames.map((f) => (f.midi != null && !inSections(sections, f.t + shift) ? { ...f, midi: null } : f));
+  }
+
   const api = {
     NOTE_NAMES, clamp, freqToMidi, midiToFreq, midiName, parseVideoId, detectPitch,
     parseLrc, formatStamp, parseMidi, toMonophonic, framesToNotes, findNote, foldDiff,
-    pitchCredit, scorePerformance, detectTechniques, techniqueBonus, detectMelody, findBarLayout, readBarPitch, estimateBarOffset, estimateBarAlignment,
+    pitchCredit, scorePerformance, detectTechniques, techniqueBonus, detectMelody, findBarLayout, readBarPitch, estimateBarOffset, estimateBarAlignment, singingSections, inSections, maskFrames,
   };
   if (typeof module !== 'undefined' && module.exports) module.exports = api;
   else root.KaraCore = api;

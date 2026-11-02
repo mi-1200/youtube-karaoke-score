@@ -418,6 +418,8 @@ td, th { border-bottom: 1px solid var(--line); padding: 6px 4px; text-align: lef
           screenNote = (screenNote ? screenNote + '。' : '') + '遅延補正を ' + settings.latency + 'ms に自動調整しました';
         }
       }
+      // 伴奏だけの所（ガイドのバーも歌詞も無い所）の声や雑音は採点に入れない
+      scoreFrames = K.maskFrames(scoreFrames, K.singingSections(guideForScore, lyrics));
       const res = K.scorePerformance(scoreFrames, guideForScore, {});
       lastDebug = recordDebug('sing', { result: res, screen: screenDebug() });
       showResult(res);
@@ -486,6 +488,15 @@ td, th { border-bottom: 1px solid var(--line); padding: 6px 4px; text-align: lef
   /* ---------- 画面の音程バー（タブの映像を読む） ---------- */
   let screen = null;
   function curGuide() { return screen && screen.offset != null ? screen.notes : effGuide; }
+  // 歌う区間（ガイドのバーか歌詞がある所）。伴奏だけの所では歌声のバーやテクニックを出さない
+  let secCache = { g: null, n: -1, l: null, last: 0, val: null };
+  function curSections() {
+    const G = curGuide(), last = G.length ? G[G.length - 1].t + G[G.length - 1].d : 0;
+    if (secCache.g !== G || secCache.n !== G.length || secCache.l !== lyrics || secCache.last !== last) {
+      secCache = { g: G, n: G.length, l: lyrics, last, val: K.singingSections(G, lyrics) };
+    }
+    return secCache.val;
+  }
   // 歌声の時刻に足して、ガイドの時刻と比べるためのずれ（画面バーを歌声で合わせたときだけ）
   function userShift() { return screen && screen.offset != null ? screen.shift || 0 : 0; }
   async function startScreen() {
@@ -641,7 +652,7 @@ td, th { border-bottom: 1px solid var(--line); padding: 6px 4px; text-align: lef
     const now = performance.now();
     if (now - liveTechAt < 400) return;
     liveTechAt = now;
-    const recent = frames.filter((f) => f.t > t - 3);
+    const recent = K.maskFrames(frames.filter((f) => f.t > t - 3), curSections(), userShift());
     if (recent.length < 30) return;
     const r = K.detectTechniques(recent);
     for (const k of Object.keys(TECH_LABEL)) for (const e of r[k] || []) {
@@ -747,7 +758,8 @@ td, th { border-bottom: 1px solid var(--line); padding: 6px 4px; text-align: lef
     });
     // 歌声：細かい揺れをまとめて、カラオケのようなバーで表示する
     const sh = userShift();
-    for (const b of voiceBars(trail.filter((f) => f.t >= t - past - 0.5))) {
+    const secs = curSections();
+    for (const b of voiceBars(K.maskFrames(trail.filter((f) => f.t >= t - past - 0.5), secs, sh))) {
       const tm = (b.t0 + b.t1) / 2 + sh;
       let m = b.midi, col = '#5ad1ff';
       const gi = effGuide.length ? K.findNote(effGuide, tm) : -1;
