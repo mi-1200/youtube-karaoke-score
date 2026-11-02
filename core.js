@@ -544,10 +544,110 @@
     return { freq: midiToFreq(bestM), salience: best / med, rms };
   }
 
+  /* ---------- 動画の音程バー（画面）の読み取り ---------- */
+  // ピンクの音程バー・現在位置の縦線を想定（例: ガイドメロ付きカラオケ動画）
+  function isBarPink(r, g, b) { return r > 190 && g < 150 && b > 110 && r - g > 80; }
+  // img: {data, width, height}（RGBA）, rect: 動画の範囲 {x,y,w,h}（img の画素座標）
+  // 縦線（現在位置）と音程バーの帯を探す。見つからなければ null
+  function isLight(r, g, b) { const mn = Math.min(r, g, b), mx = Math.max(r, g, b); return mn > 135 && mx - mn < 45; }
+  function findBarLayout(img, rect) {
+    // まずピンクの縦線を探し、無ければ（曲間などで線が白い時）明るい縦線を探す
+    return findBarLayoutBy(img, rect, isBarPink, 0.08) || findBarLayoutBy(img, rect, (r, g, b) => isBarPink(r, g, b) || isLight(r, g, b), 0.15);
+  }
+  function findBarLayoutBy(img, rect, test, minRun) {
+    const { data, width } = img;
+    const x0 = Math.round(rect.x + rect.w * 0.12), x1 = Math.round(rect.x + rect.w * 0.6);
+    const y0 = Math.round(rect.y), y1 = Math.round(rect.y + rect.h * 0.45);
+    let best = { run: 0 };
+    const runs = [];
+    for (let x = x0; x <= x1; x++) {
+      let run = 0, gap = 0, start = -1, bestRun = 0, bs = 0, be = 0;
+      for (let y = y0; y < y1; y++) {
+        const i = (y * width + x) * 4;
+        if (test(data[i], data[i + 1], data[i + 2])) {
+          if (run === 0) start = y;
+          run += 1 + gap; gap = 0;
+          if (run > bestRun) { bestRun = run; bs = start; be = y; }
+        } else if (run > 0 && gap < 3) gap++;
+        else { run = 0; gap = 0; }
+      }
+      runs.push({ x, run: bestRun, top: bs, bottom: be });
+      if (bestRun > best.run) best = { x, run: bestRun, top: bs, bottom: be };
+    }
+    if (best.run < rect.h * minRun) return null;
+    // 縦線の太さ分をまとめる
+    const cols = runs.filter((c) => c.run >= best.run * 0.7 && Math.abs(c.x - best.x) <= rect.w * 0.01);
+    const lineLeft = Math.min(...cols.map((c) => c.x)), lineRight = Math.max(...cols.map((c) => c.x));
+    const top = best.top, bottom = best.bottom;
+    // 五線の間隔（明るい横線）を探して、半音の高さ＝間隔の半分とする
+    let step = null;
+    const xa = Math.round(lineRight + rect.w * 0.05), xb = Math.round(rect.x + rect.w * 0.98);
+    const rows = [];
+    for (let y = top; y <= bottom; y++) {
+      let s = 0, n = 0;
+      for (let x = xa; x < xb; x += 2) {
+        const i = (y * width + x) * 4;
+        if (isBarPink(data[i], data[i + 1], data[i + 2])) continue;
+        s += data[i] + data[i + 1] + data[i + 2]; n++;
+      }
+      rows.push(n ? s / n : 0);
+    }
+    // 明るい横線（五線）だけを拾う：一番目立つ線の6割以上の強さのものに限る
+    const cand = [];
+    for (let i = 2; i < rows.length - 2; i++) {
+      const loc = Math.min(rows[i - 2], rows[i + 2]);
+      if (rows[i] >= rows[i - 1] && rows[i] >= rows[i + 1] && rows[i] - loc > 12) cand.push({ i, prom: rows[i] - loc });
+    }
+    const maxProm = Math.max(0, ...cand.map((c) => c.prom));
+    const peaks = cand.filter((c) => c.prom >= maxProm * 0.6).map((c) => c.i);
+    if (peaks.length >= 4) {
+      const diffs = [];
+      for (let i = 1; i < peaks.length; i++) if (peaks[i] - peaks[i - 1] >= 4) diffs.push(peaks[i] - peaks[i - 1]);
+      if (diffs.length >= 3) {
+        // 最初と最後の線の距離から割り出して、小さい画面でも端数まで正確にする
+        const md = median(diffs), span = peaks[peaks.length - 1] - peaks[0];
+        step = span / Math.max(1, Math.round(span / md)) / 2;
+      }
+    }
+    if (!step || step < 1.5) step = (bottom - top) / 25.6;
+    return { lineLeft, lineRight, top, bottom, step };
+  }
+  // 現在位置のすぐ右にあるバーの高さを読む。戻り値: 帯の下端からの半音数（相対）または null（休符）
+  function readBarPitch(img, rect, layout) {
+    const { data, width } = img;
+    const xa = Math.round(layout.lineRight + Math.max(2, rect.w * 0.003)), xb = Math.round(layout.lineRight + rect.w * 0.014);
+    for (let x = xa; x <= xb; x++) {
+      const ys = [];
+      for (let y = layout.top; y <= layout.bottom; y++) {
+        const i = (y * width + x) * 4;
+        if (isBarPink(data[i], data[i + 1], data[i + 2])) ys.push(y);
+      }
+      if (ys.length >= 2 && ys.length < (layout.bottom - layout.top) * 0.5) {
+        const y = median(ys);
+        return { rel: (layout.bottom - y) / layout.step, y };
+      }
+    }
+    return null;
+  }
+  // (相対値, 実音) の組から、相対値→MIDI のずれ（オフセット）を推定
+  // pairs: [{rel, midi}]（midi は動画のガイド音や歌声）。オクターブ違いを許して最も合うずれを探し、
+  // 最後にオクターブを midi の中央値に寄せる。戻り値 {offset, fit(0-1)} または null
+  function estimateBarOffset(pairs) {
+    if (!pairs || pairs.length < 10) return null;
+    let best = -1, bestC = 0;
+    for (let c = 0; c < 12; c += 0.1) {
+      let sc = 0;
+      for (const p of pairs) sc += pitchCredit(Math.abs(foldDiff(p.midi, p.rel + c)));
+      if (sc > best) { best = sc; bestC = c; }
+    }
+    const oct = Math.round(median(pairs.map((p) => p.midi - (p.rel + bestC))) / 12) * 12;
+    return { offset: bestC + oct, fit: best / pairs.length };
+  }
+
   const api = {
     NOTE_NAMES, clamp, freqToMidi, midiToFreq, midiName, parseVideoId, detectPitch,
     parseLrc, formatStamp, parseMidi, toMonophonic, framesToNotes, findNote, foldDiff,
-    pitchCredit, scorePerformance, detectMelody,
+    pitchCredit, scorePerformance, detectMelody, findBarLayout, readBarPitch, estimateBarOffset,
   };
   if (typeof module !== 'undefined' && module.exports) module.exports = api;
   else root.KaraCore = api;

@@ -512,3 +512,27 @@ test('detectMelody: finds a lead melody over chords, bass and noise', () => {
   }
   assert.equal(K.detectMelody(new Float32Array(n), sr).freq, 0);
 });
+
+test('findBarLayout / readBarPitch / estimateBarOffset: reads a synthetic pitch-bar frame', () => {
+  const w = 960, h = 250, data = new Uint8ClampedArray(w * h * 4);
+  const set = (x, y, c) => { const i = (y * w + x) * 4; data[i] = c[0]; data[i + 1] = c[1]; data[i + 2] = c[2]; data[i + 3] = 255; };
+  for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) set(x, y, [70, 70, 75]);
+  const top = 10, bottom = 110, step = 4; // 半音4px、五線は8px間隔
+  for (let k = 2; k < 25; k += 2) for (let x = 0; x < w; x++) set(x, bottom - k * step, [175, 175, 175]);
+  const lineX = 317;
+  for (let y = top; y <= bottom; y++) for (let x = lineX - 1; x <= lineX + 1; x++) set(x, y, [255, 90, 170]);
+  const barRel = 9; // 帯の下端から9半音
+  for (let x = lineX + 2; x < lineX + 80; x++) for (let dy = -2; dy <= 2; dy++) set(x, bottom - barRel * step + dy, [255, 90, 170]);
+  const img = { data, width: w, height: h }, rect = { x: 0, y: 0, w, h: 540 };
+  const L = K.findBarLayout(img, rect);
+  assert.ok(L, 'layout found');
+  assert.ok(Math.abs(L.lineLeft - lineX) <= 2 && Math.abs(L.step - step) < 0.3, JSON.stringify(L));
+  const r = K.readBarPitch(img, rect, L);
+  assert.ok(r && Math.abs(r.rel - barRel) < 0.6, JSON.stringify(r));
+  // オフセット推定：rel + 57 = 実音（ノイズ・オクターブ違い混じり）
+  const pairs = [];
+  for (let i = 0; i < 200; i++) { const rel = (i % 12) + 0.1; let m = rel + 57 + (i % 7 === 0 ? 12 : 0) + Math.sin(i) * 0.2; pairs.push({ rel, midi: m }); }
+  const est = K.estimateBarOffset(pairs);
+  assert.ok(est && Math.abs(est.offset - 57) < 0.3, JSON.stringify(est));
+  assert.equal(K.estimateBarOffset(pairs.slice(0, 5)), null);
+});
