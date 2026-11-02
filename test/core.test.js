@@ -718,3 +718,8 @@ test('findBarLayout: learns an unknown bar color (green) by itself', () => {
   assert.ok(L && L.color === 'auto' && Math.abs(L.lineLeft - lineX) <= 2, JSON.stringify(L));
   assert.deepEqual(K.readBarSegments(img, rect, L).map((s) => Math.round(s.rel)), [6, 8, 5]);
 });
+
+test('findBarLayout: a frame without any bars returns null without throwing', () => {
+  const w = 400, h = 120, data = new Uint8ClampedArray(w * h * 4).fill(60);
+  assert.equal(K.findBarLayout({ data, width: w, height: h }, { x: 0, y: 0, w, h: 260 }), null);
+});

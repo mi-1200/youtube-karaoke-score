@@ -836,7 +836,7 @@
     const y0 = Math.max(0, Math.round(rect.y)), y1 = Math.min(height - 1, Math.round(rect.y + rect.h * 0.45));
     let best = { run: 0 };
     const maxGap = Math.max(3, Math.round(rect.h * 0.035)); // バーが縦線に重なる所は途切れる
-    for (let x = Math.max(6, x0); x <= Math.min(x1, width - 7); x++) {
+    for (let x = Math.max(6, x0); x <= Math.min(x1, width - 7); x += 2) { // 縦線は2画素以上あるので1つおきで足りる
       let run = 0, gap = 0, start = -1, prevH = null, hs = [];
       for (let y = y0; y < y1; y++) {
         const c = px(x, y), [h, sat, v] = hsv(c[0], c[1], c[2]);
@@ -878,6 +878,7 @@
     const hue = (bk * 10 + 5 + sh / sw + 360) % 360;
     return { lineHue: best.hue, hue, minV: Math.round(vm * 0.75) };
   }
+  function isLight(r, g, b) { const mn = Math.min(r, g, b), mx = Math.max(r, g, b); return mn > 135 && mx - mn < 45; }
   function findBarLayout(img, rect, opts) {
     opts = opts || {};
     // 動画の種類（縦線とバーの色）ごとに縦線を探し、縦線の右にそのバーの色が一番多いものを選ぶ。
