@@ -84,7 +84,7 @@ function makeMidi() {
   check('mic off after reload', !(await page.getAttribute('#micBtn', 'class') || '').includes('on'));
   await page.click('#recGuideBtn');
   await sleep(7000);
-  check('stop button label in guide mode', (await page.textContent('#stopBtn')).includes('お手本'));
+  check('stop button label in guide mode', (await page.textContent('#stopBtn')).includes('ガイドを保存'));
   await page.click('#stopBtn');
   await sleep(300);
   const gs = await page.textContent('#guideStatus');

@@ -33,3 +33,18 @@ node --test test/             # 採点ロジックのテスト
 ```
 
 `main` に push すると GitHub Actions がテストを実行して Pages に公開します（リポジトリの Settings → Pages → Source を「GitHub Actions」にしてください）。
+
+## バージョン管理
+
+- 現在のバージョンと更新履歴は `version.js` の1か所で管理しています。サイト下部に「うたスコア vX.Y.Z」と「更新履歴」が表示され、デバッグ記録にもバージョンが入ります。
+- 番号の付け方：大きな作り直しは1つ目、機能追加は2つ目、修正だけなら3つ目を上げます（例: 0.3.0 → 0.3.1）。
+- 更新するときは `version.js` の先頭に1件追加し、GitHub に同じ番号のタグ（例: `v0.3.0`）を付けます。過去の版のコードはタグから確認できます。
+
+## テスト
+
+```sh
+node --test test/                                   # 採点ロジック
+python3 -m http.server 8765 &                       # E2E用のサーバー
+LANG=C.UTF-8 node e2e/run.js                        # 画面全体のE2E（YouTubeはモック）
+LANG=C.UTF-8 node e2e/tabguide.js                   # 動画の音からガイド・バージョン表示
+```

@@ -488,10 +488,66 @@
     return res;
   }
 
+
+  /* ---------- 伴奏入りの音からメロディを拾う（倍音加算） ---------- */
+  function fftMag(buf) {
+    const n = buf.length; // 2のべき乗
+    const re = new Float64Array(n), im = new Float64Array(n);
+    for (let i = 0; i < n; i++) re[i] = buf[i] * (0.5 - 0.5 * Math.cos(2 * Math.PI * i / (n - 1)));
+    for (let i = 1, j = 0; i < n; i++) {
+      let bit = n >> 1;
+      for (; j & bit; bit >>= 1) j ^= bit;
+      j ^= bit;
+      if (i < j) { let t = re[i]; re[i] = re[j]; re[j] = t; t = im[i]; im[i] = im[j]; im[j] = t; }
+    }
+    for (let len = 2; len <= n; len <<= 1) {
+      const ang = -2 * Math.PI / len, wr = Math.cos(ang), wi = Math.sin(ang);
+      for (let i = 0; i < n; i += len) {
+        let cr = 1, ci = 0;
+        for (let k = 0; k < len / 2; k++) {
+          const a = i + k, b = a + len / 2;
+          const tr = re[b] * cr - im[b] * ci, ti = re[b] * ci + im[b] * cr;
+          re[b] = re[a] - tr; im[b] = im[a] - ti; re[a] += tr; im[a] += ti;
+          const ncr = cr * wr - ci * wi; ci = cr * wi + ci * wr; cr = ncr;
+        }
+      }
+    }
+    const mag = new Float32Array(n / 2);
+    for (let i = 0; i < n / 2; i++) mag[i] = Math.sqrt(Math.sqrt(re[i] * re[i] + im[i] * im[i])); // 圧縮
+    return mag;
+  }
+  // buf: 4096サンプル推奨。戻り値 {freq, salience, rms}（無音・不明瞭なら freq=0）
+  function detectMelody(buf, sampleRate, opts) {
+    opts = opts || {};
+    const minM = opts.minMidi || 53, maxM = opts.maxMidi || 86, H = opts.harmonics || 6;
+    const rmsGate = opts.rmsGate == null ? 0.003 : opts.rmsGate;
+    const minRatio = opts.minRatio || 1.6;
+    let rms = 0;
+    for (let i = 0; i < buf.length; i++) rms += buf[i] * buf[i];
+    rms = Math.sqrt(rms / buf.length);
+    if (rms < rmsGate) return { freq: 0, salience: 0, rms };
+    const mag = fftMag(buf), binHz = sampleRate / buf.length;
+    const at = (f) => { const x = f / binHz, i = Math.floor(x); if (i + 1 >= mag.length) return 0; return Math.max(mag[i], mag[i + 1]); };
+    const sal = [];
+    let best = -1, bestM = 0;
+    for (let m = minM; m <= maxM; m += 0.1) {
+      const f0 = midiToFreq(m);
+      let s = 0;
+      for (let h = 1; h <= H; h++) s += Math.pow(0.8, h - 1) * at(f0 * h);
+      s *= 0.5 + 0.5 * Math.min(1, at(f0) / (at(f0 * 2) + 1e-9)); // 基音が弱い候補（オクターブ下）を減点
+      sal.push(s);
+      if (s > best) { best = s; bestM = m; }
+    }
+    const sorted = sal.slice().sort((a, b) => a - b);
+    const med = sorted[sorted.length >> 1] || 1e-9;
+    if (best / med < minRatio) return { freq: 0, salience: best / med, rms };
+    return { freq: midiToFreq(bestM), salience: best / med, rms };
+  }
+
   const api = {
     NOTE_NAMES, clamp, freqToMidi, midiToFreq, midiName, parseVideoId, detectPitch,
     parseLrc, formatStamp, parseMidi, toMonophonic, framesToNotes, findNote, foldDiff,
-    pitchCredit, scorePerformance,
+    pitchCredit, scorePerformance, detectMelody,
   };
   if (typeof module !== 'undefined' && module.exports) module.exports = api;
   else root.KaraCore = api;

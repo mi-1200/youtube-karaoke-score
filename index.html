@@ -75,6 +75,12 @@ td, th { border-bottom: 1px solid var(--line); padding: 6px 4px; text-align: lef
 #radar { display: block; margin: 0 auto; width: 260px; height: 230px; }
 .comments { background: var(--panel2); border-radius: 10px; padding: 10px 14px; font-size: 14px; line-height: 1.6; }
 .songsel { margin-top: 8px; }
+.appfoot { margin-top: 24px; text-align: center; color: var(--muted); font-size: 13px; }
+.appfoot a, .linkbtn { color: var(--accent2); }
+.linkbtn { background: none; border: none; padding: 0; text-decoration: underline; font-size: 13px; }
+.cl-ver { font-weight: 700; margin: 12px 0 4px; }
+.cl-ver small { color: var(--muted); font-weight: 400; margin-left: 6px; }
+#changelogBody ul { margin: 0; padding-left: 20px; font-size: 14px; line-height: 1.6; }
 @media (max-width: 600px) {
   h1 { font-size: 17px; }
   .live { margin-left: 0; width: 100%; justify-content: space-between; }
@@ -131,12 +137,14 @@ td, th { border-bottom: 1px solid var(--line); padding: 6px 4px; text-align: lef
     <button id="midiBtn">🎼 MIDIファイルを読み込む</button>
     <input id="midiFile" type="file" accept=".mid,.midi,audio/midi" hidden>
     <button id="recGuideBtn">🔴 お手本を録る</button>
+    <button id="tabGuideBtn">🖥 動画の音から作る（PC）</button>
     <button id="clearGuideBtn" class="danger">ガイドを削除</button>
   </div>
   <div id="midiTracks" class="row" style="margin-top:8px" hidden>
     <select id="trackSelect" class="grow"></select>
     <button id="useTrackBtn">このトラックを使う</button>
   </div>
+  <p class="muted">「動画の音から作る」は、ガイドメロディ入りのカラオケ動画向けです（PCのChrome/Edgeのみ）。共有の画面で<b>このタブ</b>を選び、<b>「タブの音声も共有する」をオン</b>にしてください。動画を最初から最後まで再生して、鳴っているメロディの音程を拾います。音は解析に使うだけで、録音・送信はしません。精度は動画の音作り次第なので、ずれた部分は「開始のずれ」で調整してください。</p>
   <p class="muted">「お手本を録る」は、動画を最初から再生しながらマイクで一度歌う（または原曲を近くで流す）と、その音程をガイドとして保存します。</p>
   <h3>ずれの調整</h3>
   <div class="row">
@@ -199,6 +207,17 @@ td, th { border-bottom: 1px solid var(--line); padding: 6px 4px; text-align: lef
   </div>
 </div>
 
+<footer class="appfoot"><span id="verLabel"></span>　<button id="changelogBtn" class="linkbtn">更新履歴</button>　<a href="https://github.com/mi-1200/youtube-karaoke-score" target="_blank" rel="noopener">GitHub</a></footer>
+
+<div id="changelogModal" class="modal">
+  <div class="card">
+    <h3 style="margin-top:0">更新履歴</h3>
+    <div id="changelogBody"></div>
+    <div class="row" style="justify-content:center;margin-top:14px"><button id="closeChangelogBtn">閉じる</button></div>
+  </div>
+</div>
+
+<script src="version.js"></script>
 <script src="core.js"></script>
 <script>
 (function () {
@@ -345,20 +364,24 @@ td, th { border-bottom: 1px solid var(--line); padding: 6px 4px; text-align: lef
   /* ---------- 採点・お手本録り ---------- */
   async function begin(newMode) {
     if (!player || !currentId) { alertLine('先に動画を読み込んでください'); return; }
-    if (!(await startMic())) return;
+    if (newMode === 'tabguide') { if (!(await startTabCapture())) return; }
+    else if (!(await startMic())) return;
     mode = newMode;
     frames = []; trail = []; liveNotes = new Map();
     player.seekTo(0, true);
     player.playVideo();
-    $('singBtn').disabled = true; $('recGuideBtn').disabled = true; $('stopBtn').disabled = false;
-    $('modeLine').innerHTML = newMode === 'sing' ? '<span class="recdot"></span>採点中…最後まで歌うか「終了して採点」を押してください' : '<span class="recdot"></span>お手本を録音中…終わったら「終了して採点」を押すとガイドとして保存します';
-    $('stopBtn').textContent = newMode === 'sing' ? '■ 終了して採点' : '■ お手本を保存';
+    $('singBtn').disabled = true; $('recGuideBtn').disabled = true; $('tabGuideBtn').disabled = true; $('stopBtn').disabled = false;
+    $('modeLine').innerHTML = newMode === 'sing' ? '<span class="recdot"></span>採点中…最後まで歌うか「終了して採点」を押してください'
+      : newMode === 'tabguide' ? '<span class="recdot"></span>動画の音からガイドを作成中…最後まで再生すると自動で保存します（途中で止めるなら「ガイドを保存」）'
+      : '<span class="recdot"></span>お手本を録音中…終わったら「終了して採点」を押すとガイドとして保存します';
+    $('stopBtn').textContent = newMode === 'sing' ? '■ 終了して採点' : '■ ガイドを保存';
   }
   function finish() {
     const m = mode;
     mode = 'idle';
     try { player.pauseVideo(); } catch (e) {}
-    $('singBtn').disabled = false; $('recGuideBtn').disabled = false; $('stopBtn').disabled = true;
+    $('singBtn').disabled = false; $('recGuideBtn').disabled = false; $('tabGuideBtn').disabled = false; $('stopBtn').disabled = true;
+    if (m === 'tabguide') stopTabCapture();
     $('stopBtn').textContent = '■ 終了して採点';
     $('modeLine').textContent = '';
     if (m === 'sing') {
@@ -372,18 +395,59 @@ td, th { border-bottom: 1px solid var(--line); padding: 6px 4px; text-align: lef
         s.history = s.history.slice(0, 50);
         persist(); renderHistory();
       }
-    } else if (m === 'guide') {
-      const notes = K.framesToNotes(frames);
-      recordDebug('guide', { guideNotes: notes });
-      if (notes.length < 5) { alertLine('音程がほとんど取れなかったため、お手本は保存しませんでした'); return; }
+    } else if (m === 'guide' || m === 'tabguide') {
+      const notes = K.framesToNotes(frames, m === 'tabguide' ? { minDur: 0.15 } : undefined);
+      recordDebug(m, { guideNotes: notes });
+      if (notes.length < 5) { alertLine(m === 'tabguide' ? '動画の音からメロディをほとんど拾えませんでした。「タブの音声も共有」がオンか確認してください' : '音程がほとんど取れなかったため、お手本は保存しませんでした'); return; }
       const s = song();
-      s.guide = notes; s.guideSource = 'お手本録り'; s.offset = 0; s.transpose = 0;
+      s.guide = notes; s.guideSource = m === 'tabguide' ? '動画の音' : 'お手本録り'; s.offset = 0; s.transpose = 0;
       persist(); applySong();
-      alertLine('お手本から ' + notes.length + ' 音のガイドを作りました');
+      alertLine((m === 'tabguide' ? '動画の音から ' : 'お手本から ') + notes.length + ' 音のガイドを作りました');
     }
   }
   $('singBtn').onclick = () => begin('sing');
   $('recGuideBtn').onclick = () => begin('guide');
+  $('tabGuideBtn').onclick = () => begin('tabguide');
+
+  /* ---------- タブの音声キャプチャ（ガイド作成用） ---------- */
+  let tabStream = null, tabAnalyser = null, tabBuf = null;
+  async function startTabCapture() {
+    if (!navigator.mediaDevices || !navigator.mediaDevices.getDisplayMedia) {
+      alertLine('このブラウザでは動画の音を取り込めません。PCのChromeかEdgeで開いてください');
+      return false;
+    }
+    try {
+      tabStream = await navigator.mediaDevices.getDisplayMedia({
+        video: true,
+        audio: { echoCancellation: false, noiseSuppression: false, autoGainControl: false, suppressLocalAudioPlayback: false },
+        preferCurrentTab: true, selfBrowserSurface: 'include', surfaceSwitching: 'exclude', systemAudio: 'include',
+      });
+    } catch (e) {
+      alertLine('画面共有がキャンセルされました');
+      return false;
+    }
+    if (!tabStream.getAudioTracks().length) {
+      tabStream.getTracks().forEach((t) => t.stop()); tabStream = null;
+      alertLine('音声が共有されていません。共有の画面で「タブの音声も共有する」をオンにしてください');
+      return false;
+    }
+    audioCtx = audioCtx || new (window.AudioContext || window.webkitAudioContext)();
+    if (audioCtx.state === 'suspended') await audioCtx.resume();
+    const src = audioCtx.createMediaStreamSource(new MediaStream(tabStream.getAudioTracks()));
+    // 低音（ベース）と高域の打楽器を弱めて、メロディ帯域だけを見る
+    const hp = audioCtx.createBiquadFilter(); hp.type = 'highpass'; hp.frequency.value = 170; hp.Q.value = 0.7;
+    const lp = audioCtx.createBiquadFilter(); lp.type = 'lowpass'; lp.frequency.value = 2200; lp.Q.value = 0.7;
+    tabAnalyser = audioCtx.createAnalyser(); tabAnalyser.fftSize = 4096;
+    src.connect(hp); hp.connect(lp); lp.connect(tabAnalyser);
+    tabBuf = new Float32Array(tabAnalyser.fftSize);
+    // 共有が止められたら終了
+    tabStream.getTracks().forEach((t) => t.addEventListener('ended', () => { if (mode === 'tabguide') finish(); }));
+    return true;
+  }
+  function stopTabCapture() {
+    if (tabStream) tabStream.getTracks().forEach((t) => t.stop());
+    tabStream = null; tabAnalyser = null;
+  }
   $('stopBtn').onclick = () => finish();
 
   /* ---------- メインループ ---------- */
@@ -398,9 +462,12 @@ td, th { border-bottom: 1px solid var(--line); padding: 6px 4px; text-align: lef
     lastSongT = t;
 
     let midi = null, rms = 0, freq = 0;
-    if (analyser) {
-      analyser.getFloatTimeDomainData(buf);
-      const p = K.detectPitch(buf, audioCtx.sampleRate, { rmsGate: settings.gate });
+    const useTab = mode === 'tabguide' && tabAnalyser;
+    const an = useTab ? tabAnalyser : analyser, abuf = useTab ? tabBuf : buf;
+    if (an) {
+      an.getFloatTimeDomainData(abuf);
+      // 動画の音は伴奏が混ざるので、倍音の重なりからメロディを探す方式を使う
+      const p = useTab ? K.detectMelody(abuf, audioCtx.sampleRate) : K.detectPitch(abuf, audioCtx.sampleRate, { rmsGate: settings.gate });
       rms = p.rms; freq = p.freq;
       if (freq > 0) midi = K.freqToMidi(freq);
     }
@@ -408,8 +475,8 @@ td, th { border-bottom: 1px solid var(--line); padding: 6px 4px; text-align: lef
     $('liveNote').textContent = midi != null ? K.midiName(midi) : '--';
     $('liveHz').textContent = midi != null ? freq.toFixed(0) + 'Hz' : '';
 
-    const ft = t - settings.latency / 1000;
-    if (playing && analyser) {
+    const ft = t - (useTab ? 0.03 : settings.latency / 1000);
+    if (playing && an) {
       trail.push({ t: ft, midi });
       if (trail.length > 600) trail.splice(0, trail.length - 600);
       if (mode !== 'idle') frames.push({ t: ft, midi, rms });
@@ -677,7 +744,7 @@ td, th { border-bottom: 1px solid var(--line); padding: 6px 4px; text-align: lef
     let track = null;
     try { track = micStream ? micStream.getAudioTracks()[0].getSettings() : null; } catch (e) {}
     const log = {
-      app: 'utascore-debug', version: 1, kind, date: new Date().toISOString(),
+      app: 'utascore-debug', version: 1, appVersion: window.UTASCORE_VERSION || 'dev', kind, date: new Date().toISOString(),
       videoId: currentId, title: s.title || '',
       settings: Object.assign({}, settings),
       guide: { source: s.guideSource || '', offset: s.offset || 0, transpose: s.transpose || 0, notes: s.guide || null },
@@ -722,7 +789,7 @@ td, th { border-bottom: 1px solid var(--line); padding: 6px 4px; text-align: lef
       const d = new Date(log.date);
       const label = document.createElement('span'); label.className = 'grow';
       label.textContent = d.toLocaleString('ja-JP', { month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit', second: '2-digit' }) + '　' +
-        (log.kind === 'sing' ? '採点 ' + (log.result ? log.result.total.toFixed(3) + '点' : '') : 'お手本録り') + '　' + (log.title || log.videoId || '') + '（' + log.frames.count + 'フレーム）';
+        (log.kind === 'sing' ? '採点 ' + (log.result ? log.result.total.toFixed(3) + '点' : '') : log.kind === 'tabguide' ? '動画の音からガイド' : 'お手本録り') + '　' + (log.title || log.videoId || '') + '（' + log.frames.count + 'フレーム）';
       const b = document.createElement('button'); b.textContent = '書き出し'; b.onclick = () => downloadDebug(log);
       row.append(label, b); box.appendChild(row);
     });
@@ -747,6 +814,23 @@ td, th { border-bottom: 1px solid var(--line); padding: 6px 4px; text-align: lef
     });
     box.innerHTML = ''; box.appendChild(t);
   }
+
+  /* ---------- バージョン ---------- */
+  const APP_VERSION = window.UTASCORE_VERSION || 'dev';
+  const CHANGELOG = window.UTASCORE_CHANGELOG || [];
+  $('verLabel').textContent = 'うたスコア v' + APP_VERSION + (CHANGELOG[0] ? '（' + CHANGELOG[0].date + '）' : '');
+  $('changelogBtn').onclick = () => {
+    const body = $('changelogBody'); body.innerHTML = '';
+    CHANGELOG.forEach((c) => {
+      const h = document.createElement('div'); h.className = 'cl-ver'; h.textContent = 'v' + c.version;
+      const sm = document.createElement('small'); sm.textContent = c.date; h.appendChild(sm);
+      const ul = document.createElement('ul');
+      c.changes.forEach((x) => { const li = document.createElement('li'); li.textContent = x; ul.appendChild(li); });
+      body.append(h, ul);
+    });
+    $('changelogModal').classList.add('show');
+  };
+  $('closeChangelogBtn').onclick = () => $('changelogModal').classList.remove('show');
 
   /* ---------- 設定・その他 ---------- */
   $('latencyInput').value = settings.latency; $('gateInput').value = settings.gate; $('echoInput').checked = settings.echo;

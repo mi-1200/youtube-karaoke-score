@@ -491,3 +491,24 @@ test('scorePerformance: does not mutate inputs and accepts unsorted frames', () 
   assert.ok(Math.abs(a.total - b.total) < 1e-9);
   assert.equal(JSON.stringify(shuffled), copy);
 });
+
+test('detectMelody: finds a lead melody over chords, bass and noise', () => {
+  const sr = 48000, n = 4096;
+  const f = (m) => 440 * Math.pow(2, (m - 69) / 12);
+  for (const lead of [60, 64, 67, 72, 76]) {
+    const buf = new Float32Array(n);
+    for (let i = 0; i < n; i++) {
+      const t = i / sr;
+      let s = 0;
+      for (const m of [48, 52, 55, 60]) { const ph = 2 * Math.PI * f(m) * t; s += 0.04 * (Math.sin(ph) + 0.5 * Math.sin(2 * ph)); }
+      s += 0.15 * Math.sin(2 * Math.PI * f(36) * t);
+      const ph = 2 * Math.PI * f(lead) * t;
+      s += 0.2 * (Math.sin(ph) + 0.5 * Math.sin(2 * ph) + 0.25 * Math.sin(3 * ph));
+      buf[i] = s;
+    }
+    const r = K.detectMelody(buf, sr);
+    assert.ok(r.freq > 0, 'voiced for ' + lead);
+    assert.ok(Math.abs(K.freqToMidi(r.freq) - lead) < 0.5, `lead ${lead} detected as ${K.freqToMidi(r.freq).toFixed(2)}`);
+  }
+  assert.equal(K.detectMelody(new Float32Array(n), sr).freq, 0);
+});
