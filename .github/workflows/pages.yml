@@ -42,3 +42,24 @@ jobs:
           path: _site
       - id: deployment
         uses: actions/deploy-pages@v4
+
+  # version.js のバージョンに合わせて、まだ無ければ GitHub にタグ（例: v0.3.0）を付ける
+  tag:
+    if: github.event_name == 'push'
+    needs: test
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Create version tag if missing
+        run: |
+          v=$(node -e "global.window={};require('./version.js');console.log(window.UTASCORE_VERSION)")
+          echo "version: $v"
+          if git rev-parse "v$v" >/dev/null 2>&1; then echo "tag v$v already exists"; exit 0; fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git tag -a "v$v" -m "v$v"
+          git push origin "v$v"
