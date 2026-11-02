@@ -17,6 +17,7 @@ const check = (n, ok, info) => { console.log((ok ? 'PASS ' : 'FAIL ') + n + (inf
   const errors = [];
   page.on('pageerror', (e) => errors.push(e.message));
   await page.goto(BASE);
+  await page.click('#consentOkBtn');
   await page.fill('#urlInput', 'https://youtu.be/dQw4w9WgXcQ');
   await page.click('#loadBtn');
   await page.waitForFunction(() => !document.getElementById('singBtn').disabled);
@@ -73,6 +74,8 @@ const check = (n, ok, info) => { console.log((ok ? 'PASS ' : 'FAIL ') + n + (inf
   }
   await page.click('#micBtn');
   await page.click('#screenBarBtn');
+  check('experimental confirm shown', await page.isVisible('#expModal'));
+  await page.click('#expOkBtn');
   await page.waitForTimeout(800);
   check('screen reading started', (await page.textContent('#screenBarBtn')).includes('やめる'));
   if (process.env.DBG) {
@@ -98,6 +101,9 @@ const check = (n, ok, info) => { console.log((ok ? 'PASS ' : 'FAIL ') + n + (inf
     return { notes: notes.length, exact: ok, covered, melInRange: window.__MEL.filter((m) => m.t < 12.5).length, sample: notes.slice(0, 6).map((n) => n.midi + '@' + n.t.toFixed(2)) };
   });
   check('saved guide matches the on-screen melody', acc.exact >= acc.notes * 0.8 && acc.covered >= acc.melInRange * 0.8, acc);
+  const [dl] = await Promise.all([page.waitForEvent('download'), page.click('#exportBtn')]);
+  const exp = JSON.parse(require('fs').readFileSync(await dl.path(), 'utf8'));
+  check('export omits guide read from the screen', exp.guide === null && exp.guideSource === '', { guide: exp.guide && exp.guide.length, src: exp.guideSource });
   const dbg = await page.evaluate(() => JSON.parse(localStorage.getItem('utascore.debug.v1') || '[]')[0]);
   check('debug log has screen info', dbg && dbg.screen && dbg.screen.layout && dbg.screen.frames.t.length > 50, dbg && dbg.screen && { offset: dbg.screen.offset, fit: dbg.screen.fit, src: dbg.screen.offsetSrc, step: dbg.screen.layout && dbg.screen.layout.step });
   check('no page errors', errors.length === 0, errors);

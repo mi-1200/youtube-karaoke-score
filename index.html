@@ -82,6 +82,8 @@ td, th { border-bottom: 1px solid var(--line); padding: 6px 4px; text-align: lef
 .appfoot a, .linkbtn { color: var(--accent2); }
 .linkbtn { background: none; border: none; padding: 0; text-decoration: underline; font-size: 13px; }
 .cl-ver { font-weight: 700; margin: 12px 0 4px; }
+.exp { display: inline-block; font-size: 12px; font-weight: 700; color: var(--warn); border: 1px solid var(--warn); border-radius: 6px; padding: 1px 6px; margin-left: 6px; vertical-align: 2px; }
+.appfoot a, .appfoot .linkbtn { white-space: nowrap; }
 .cl-ver small { color: var(--muted); font-weight: 400; margin-left: 6px; }
 #changelogBody ul { margin: 0; padding-left: 20px; font-size: 14px; line-height: 1.6; }
 @media (max-width: 600px) {
@@ -94,7 +96,7 @@ td, th { border-bottom: 1px solid var(--line); padding: 6px 4px; text-align: lef
 </style>
 </head>
 <body>
-<h1>🎤 うた<span>スコア</span> <span class="muted" style="color:var(--muted);font-weight:400">YouTubeカラオケ採点</span></h1>
+<h1>🎤 うた<span>スコア</span> <span class="muted" style="color:var(--muted);font-weight:400">カラオケ採点（非公式）</span></h1>
 
 <div id="secureWarn" class="warnbox" hidden>このページはHTTPSで開かれていないため、マイクが使えません。HTTPSのURLか、PCなら localhost で開いてください。</div>
 
@@ -140,17 +142,17 @@ td, th { border-bottom: 1px solid var(--line); padding: 6px 4px; text-align: lef
     <button id="midiBtn">🎼 MIDIファイルを読み込む</button>
     <input id="midiFile" type="file" accept=".mid,.midi,audio/midi" hidden>
     <button id="recGuideBtn">🔴 お手本を録る</button>
-    <button id="tabGuideBtn">🖥 動画の音から作る（PC）</button>
+    <button id="tabGuideBtn">🖥 動画の音から作る（PC・実験的）</button>
     <button id="clearGuideBtn" class="danger">ガイドを削除</button>
   </div>
   <div id="midiTracks" class="row" style="margin-top:8px" hidden>
     <select id="trackSelect" class="grow"></select>
     <button id="useTrackBtn">このトラックを使う</button>
   </div>
-  <p class="muted">「動画の音から作る」は、ガイドメロディ入りのカラオケ動画向けです（PCのChrome/Edgeのみ）。共有の画面で<b>このタブ</b>を選び、<b>「タブの音声も共有する」をオン</b>にしてください。動画を最初から最後まで再生して、鳴っているメロディの音程を拾います。音は解析に使うだけで、録音・送信はしません。精度は動画の音作り次第なので、ずれた部分は「開始のずれ」で調整してください。</p>
+  <p class="muted"><span class="exp" style="margin-left:0">実験的・個人利用向け</span> 「動画の音から作る」は、ガイドメロディ入りのカラオケ動画向けです（PCのChrome/Edgeのみ）。共有の画面で<b>このタブ</b>を選び、<b>「タブの音声も共有する」をオン</b>にしてください。動画を最初から最後まで再生して、鳴っているメロディの音程を拾います。音はその場で音程の数字にするだけで、録音・保存・送信はしません。作ったガイドはこの端末の中だけで使うもので、書き出しには含めません。精度は動画の音作り次第なので、ずれた部分は「開始のずれ」で調整してください。</p>
   <p class="muted">「お手本を録る」は、動画を最初から再生しながらマイクで一度歌う（または原曲を近くで流す）と、その音程をガイドとして保存します。</p>
-  <h3>動画の音程バーでリアルタイム判定（PC）</h3>
-  <p class="muted">音程バー付きのカラオケ動画なら、画面のバーを読み取って、歌いながら音程が合っているかを判定できます（PCのChrome/Edgeのみ）。押したら共有の画面で<b>このタブ</b>を選び、<b>「タブの音声も共有する」もオン</b>にしてください（ガイドメロの音で高さを自動で合わせます）。動画はなるべく大きく表示してください。歌い終わると、読み取ったバーをこの曲のガイドとして保存するので、次からはスマホでもガイドあり採点ができます。</p>
+  <h3>動画の音程バーでリアルタイム判定（PC）<span class="exp">実験的・個人利用向け</span></h3>
+  <p class="muted">音程バー付きのカラオケ動画なら、画面のバーを読み取って、歌いながら音程が合っているかを判定できます（PCのChrome/Edgeのみ）。押したら共有の画面で<b>このタブ</b>を選び、<b>「タブの音声も共有する」もオン</b>にしてください（ガイドメロの音で高さを自動で合わせます）。動画はなるべく大きく表示してください。歌い終わると、読み取ったバーをこの曲のガイドとして保存するので、次からはスマホでもガイドあり採点ができます。画面と音はこの端末の中で読み取るだけで、録画・録音・送信はしません。保存するのはバーの高さと時刻の数字だけで、書き出しには含めません（バーは動画の制作者さんの作品なので、自分で楽しむ範囲で使ってください）。</p>
   <div class="row">
     <button id="screenBarBtn">🖥 画面の音程バーを使う</button>
   </div>
@@ -168,6 +170,7 @@ td, th { border-bottom: 1px solid var(--line); padding: 6px 4px; text-align: lef
     <button id="importBtn">読み込み（JSON）</button>
     <input id="importFile" type="file" accept=".json,application/json" hidden>
   </div>
+  <p class="muted">自分の別の端末へ移すためのものです。歌詞と、動画（音・画面の音程バー）から作ったガイドは書き出しません。ガイドや歌詞を他の人に配らないでください。</p>
 </div>
 
 <div id="tab-lyrics" class="tabpanel">
@@ -194,7 +197,7 @@ td, th { border-bottom: 1px solid var(--line); padding: 6px 4px; text-align: lef
     <label class="f" style="flex-direction:row;align-items:center;gap:6px;color:var(--text)"><input id="echoInput" type="checkbox" checked> エコー除去（スピーカー使用時）</label>
   </div>
   <h3>デバッグ記録</h3>
-  <p class="muted">採点やお手本録りのたびに、毎フレームの検出音程・音量・時刻、ガイド、設定、採点の内訳、端末情報を記録します（直近5回分。録音は含みません）。うまく採点されないときは、JSONを書き出して共有してください。</p>
+  <p class="muted">採点やお手本録りのたびに、毎フレームの検出音程・音量・時刻、ガイド、設定、採点の内訳、端末情報を記録します（直近5回分。録音は含みません）。書き出したJSONには、動画のIDと曲名、ブラウザや画面サイズなどの端末情報、ガイドの音程も入ります。うまく採点されないときは、中身を確認のうえ開発者に共有してください。</p>
   <div id="debugList" class="muted">まだ記録がありません。</div>
   <div class="row" style="margin-top:8px"><button id="debugClearBtn" class="danger">デバッグ記録をすべて削除</button></div>
   <h3>メモ</h3>
@@ -217,7 +220,30 @@ td, th { border-bottom: 1px solid var(--line); padding: 6px 4px; text-align: lef
   </div>
 </div>
 
-<footer class="appfoot"><span id="verLabel"></span>　<button id="changelogBtn" class="linkbtn">更新履歴</button>　<a href="https://github.com/mi-1200/youtube-karaoke-score" target="_blank" rel="noopener">GitHub</a></footer>
+<footer class="appfoot"><span id="verLabel"></span>　<button id="changelogBtn" class="linkbtn">更新履歴</button>　<a href="privacy.html">プライバシーポリシー</a>　<a href="privacy.html#terms">利用規約</a>　<a href="https://www.youtube.com/t/terms" target="_blank" rel="noopener">YouTube利用規約</a>　<a href="https://github.com/mi-1200/youtube-karaoke-score" target="_blank" rel="noopener">GitHub</a>
+<div class="muted" style="margin-top:4px">うたスコアは個人が作った非公式アプリで、YouTube・Googleとは関係ありません。動画・楽曲・歌詞の権利は各権利者に帰属します。採点結果は目安です。</div></footer>
+
+<div id="consentModal" class="modal">
+  <div class="card">
+    <h3 style="margin-top:0">はじめに</h3>
+    <p>うたスコアは、YouTubeの公式プレイヤーで動画を再生しながら歌を採点する、個人が作った非公式アプリです（YouTube・Googleとは関係ありません）。</p>
+    <ul style="line-height:1.7;padding-left:20px">
+      <li>マイクの音声は端末の中だけで処理し、録音・送信はしません。</li>
+      <li>曲のデータや採点の記録は、このブラウザの中（localStorage）に保存します。サーバーには送りません。</li>
+      <li>動画の再生には YouTube の埋め込みプレイヤーを使うため、YouTube・Google が Cookie などの情報を扱います（<a href="https://policies.google.com/privacy" target="_blank" rel="noopener">Googleプライバシーポリシー</a>）。</li>
+    </ul>
+    <p>使うには、<a href="https://www.youtube.com/t/terms" target="_blank" rel="noopener">YouTube利用規約</a>と、うたスコアの<a href="privacy.html" target="_blank" rel="noopener">プライバシーポリシー・利用規約</a>への同意が必要です。</p>
+    <div class="row" style="justify-content:center;margin-top:14px"><button id="consentOkBtn" class="primary">同意して始める</button></div>
+  </div>
+</div>
+
+<div id="expModal" class="modal">
+  <div class="card">
+    <h3 style="margin-top:0" id="expTitle">実験的な機能です</h3>
+    <div id="expBody"></div>
+    <div class="row" style="justify-content:center;margin-top:14px"><button id="expCancelBtn">やめる</button><button id="expOkBtn" class="primary">理解して使う</button></div>
+  </div>
+</div>
 
 <div id="changelogModal" class="modal">
   <div class="card">
@@ -259,9 +285,22 @@ td, th { border-bottom: 1px solid var(--line); padding: 6px 4px; text-align: lef
   if (!window.isSecureContext) $('secureWarn').hidden = false;
 
   /* ---------- YouTube ---------- */
-  const tag = document.createElement('script');
-  tag.src = 'https://www.youtube.com/iframe_api';
-  document.head.appendChild(tag);
+  // YouTube利用規約・プライバシーポリシーへの同意が済むまでプレイヤーを読み込まない
+  const CONSENT_KEY = 'utascore.consent.v1';
+  let ytLoading = false;
+  function loadYouTubeApi() {
+    if (ytLoading) return; ytLoading = true;
+    const tag = document.createElement('script');
+    tag.src = 'https://www.youtube.com/iframe_api';
+    document.head.appendChild(tag);
+  }
+  function hasConsent() { try { return !!localStorage.getItem(CONSENT_KEY); } catch (e) { return false; } }
+  if (hasConsent()) loadYouTubeApi(); else $('consentModal').classList.add('show');
+  $('consentOkBtn').onclick = () => {
+    try { localStorage.setItem(CONSENT_KEY, new Date().toISOString()); } catch (e) {}
+    $('consentModal').classList.remove('show');
+    loadYouTubeApi();
+  };
   window.onYouTubeIframeAPIReady = function () { ytReady = true; if (pendingId) loadVideo(pendingId); };
 
   function loadVideo(id) {
@@ -443,7 +482,36 @@ td, th { border-bottom: 1px solid var(--line); padding: 6px 4px; text-align: lef
   }
   $('singBtn').onclick = () => begin('sing');
   $('recGuideBtn').onclick = () => begin('guide');
-  $('tabGuideBtn').onclick = () => begin('tabguide');
+  $('tabGuideBtn').onclick = async () => { if (await confirmExperimental('tab')) begin('tabguide'); };
+
+  /* ---------- 実験的な機能の初回確認 ---------- */
+  const EXP_KEY = 'utascore.experimental.v1';
+  const EXP_TEXT = {
+    tab: ['「動画の音から作る」について', 'ブラウザの画面共有で、このタブの音を取り込み、鳴っているメロディの音程を読み取ります。'],
+    screen: ['「画面の音程バーを使う」について', 'ブラウザの画面共有で、このタブの映像と音を取り込み、動画に表示される音程バーの位置を読み取ります。'],
+  };
+  function confirmExperimental(kind) {
+    const ok = loadJSON(EXP_KEY, {});
+    if (ok[kind]) return Promise.resolve(true);
+    const [title, what] = EXP_TEXT[kind];
+    $('expTitle').textContent = title;
+    $('expBody').innerHTML = '';
+    [what,
+      '実験的な機能で、個人で楽しむ範囲での利用を前提にしています。',
+      '取り込んだ映像・音はこの端末の中でその場で処理するだけで、録画・録音・保存・送信はしません。保存するのは音程と時刻の数字だけです。',
+      'ここで作ったガイドは書き出しに含めません。動画や音程バーは制作者さんの作品なので、他の人に配ったり公開したりしないでください。',
+    ].forEach((t) => { const p = document.createElement('p'); p.textContent = t; $('expBody').appendChild(p); });
+    $('expModal').classList.add('show');
+    return new Promise((resolve) => {
+      const done = (v) => {
+        $('expModal').classList.remove('show'); $('expOkBtn').onclick = null; $('expCancelBtn').onclick = null;
+        if (v) { const o = loadJSON(EXP_KEY, {}); o[kind] = new Date().toISOString(); saveJSON(EXP_KEY, o); }
+        resolve(v);
+      };
+      $('expOkBtn').onclick = () => done(true);
+      $('expCancelBtn').onclick = () => done(false);
+    });
+  }
 
   /* ---------- タブの音声キャプチャ（ガイド作成用） ---------- */
   let tabStream = null, tabAnalyser = null, tabBuf = null;
@@ -537,7 +605,7 @@ td, th { border-bottom: 1px solid var(--line); padding: 6px 4px; text-align: lef
     $('screenBarBtn').textContent = '🖥 画面の音程バーを使う'; $('screenBarBtn').classList.remove('on');
     $('screenStatus').textContent = '';
   }
-  $('screenBarBtn').onclick = () => (screen ? stopScreen() : startScreen());
+  $('screenBarBtn').onclick = async () => { if (screen) stopScreen(); else if (await confirmExperimental('screen')) startScreen(); };
   window.__utascoreScreen = () => screen; // テスト・調査用
 
   // 取り込んだ映像の中で、動画（iframe）がある範囲
@@ -936,13 +1004,20 @@ td, th { border-bottom: 1px solid var(--line); padding: 6px 4px; text-align: lef
   $('transposeInput').onchange = (e) => { const s = song(); if (!s) return; s.transpose = K.clamp(parseInt(e.target.value, 10) || 0, -12, 12); e.target.value = s.transpose; persist(); rebuildGuide(); };
 
   /* ---------- 書き出し・読み込み ---------- */
+  const VIDEO_GUIDE_SOURCES = ['画面の音程バー', '動画の音'];
   $('exportBtn').onclick = () => {
     const s = song(); if (!s) { alertLine('先に動画を読み込んでください'); return; }
-    const data = { app: 'utascore', version: 1, videoId: currentId, title: s.title, guide: s.guide, guideSource: s.guideSource, offset: s.offset, transpose: s.transpose, lyrics: s.lyrics };
+    // 歌詞と、動画（音・画面の音程バー）から作ったガイドは書き出さない（他の人への配布を防ぐ）
+    const fromVideo = VIDEO_GUIDE_SOURCES.includes(s.guideSource);
+    const data = { app: 'utascore', version: 1, videoId: currentId, title: s.title, guide: fromVideo ? null : s.guide, guideSource: fromVideo ? '' : s.guideSource, offset: s.offset, transpose: s.transpose };
     const a = document.createElement('a');
     a.href = URL.createObjectURL(new Blob([JSON.stringify(data, null, 1)], { type: 'application/json' }));
     a.download = (s.title || currentId).replace(/[\\/:*?"<>|]/g, '_').slice(0, 60) + '.utascore.json';
     a.click(); setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+    const left = [];
+    if (s.lyrics) left.push('歌詞');
+    if (fromVideo && s.guide) left.push('動画から作ったガイド');
+    alertLine('書き出しました' + (left.length ? '（' + left.join('と') + 'は含めていません）' : ''));
   };
   $('importBtn').onclick = () => $('importFile').click();
   $('importFile').onchange = async (e) => {
@@ -951,7 +1026,8 @@ td, th { border-bottom: 1px solid var(--line); padding: 6px 4px; text-align: lef
     try {
       const d = JSON.parse(await f.text());
       if (!d.videoId) throw new Error('形式が違います');
-      const s = songs[d.videoId] = Object.assign(songs[d.videoId] || { history: [] }, { title: d.title || '', guide: d.guide || null, guideSource: d.guideSource || '', offset: d.offset || 0, transpose: d.transpose || 0, lyrics: d.lyrics || '' });
+      const s = songs[d.videoId] = Object.assign(songs[d.videoId] || { history: [] }, { title: d.title || '', offset: d.offset || 0, transpose: d.transpose || 0 },
+        d.guide && !VIDEO_GUIDE_SOURCES.includes(d.guideSource) ? { guide: d.guide, guideSource: d.guideSource || '' } : {});
       persist();
       $('urlInput').value = 'https://youtu.be/' + d.videoId;
       loadVideo(d.videoId);

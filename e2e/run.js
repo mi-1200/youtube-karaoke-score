@@ -40,6 +40,11 @@ function makeMidi() {
   await page.goto(BASE);
   await page.evaluate(() => localStorage.clear());
   await page.reload();
+  check('consent modal shown on first visit', await page.isVisible('#consentModal'));
+  check('YouTube API not loaded before consent', await page.evaluate(() => !document.querySelector('script[src*="iframe_api"]')));
+  check('footer has privacy and YouTube terms links', await page.evaluate(() => !!document.querySelector('.appfoot a[href="privacy.html"]') && !!document.querySelector('.appfoot a[href="https://www.youtube.com/t/terms"]')));
+  await page.click('#consentOkBtn');
+  check('consent modal closed', !(await page.isVisible('#consentModal')));
   await page.fill('#urlInput', 'https://www.youtube.com/watch?v=dQw4w9WgXcQ');
   await page.click('#loadBtn');
   await page.waitForFunction(() => !document.getElementById('singBtn').disabled, null, { timeout: 5000 });
@@ -193,7 +198,7 @@ function makeMidi() {
   const [dl] = await Promise.all([page.waitForEvent('download'), page.click('#exportBtn')]);
   const expPath = path.join(__dirname, 'export.json'); await dl.saveAs(expPath);
   const exp = JSON.parse(fs.readFileSync(expPath, 'utf8'));
-  check('export JSON content', exp.app === 'utascore' && exp.videoId === 'dQw4w9WgXcQ' && exp.guide.length === 16 && exp.lyrics.includes('あいうえお'), { name: dl.suggestedFilename() });
+  check('export JSON content', exp.app === 'utascore' && exp.videoId === 'dQw4w9WgXcQ' && exp.guide.length === 16 && !('lyrics' in exp), { name: dl.suggestedFilename() });
   check('export filename', dl.suggestedFilename() === 'テスト曲 dQw4w9WgXcQ.utascore.json', dl.suggestedFilename());
   exp.videoId = 'abcdefghijk'; exp.title = 'インポート曲'; fs.writeFileSync(expPath, JSON.stringify(exp));
   const [fc2] = await Promise.all([page.waitForEvent('filechooser'), page.click('#importBtn')]);
@@ -202,7 +207,7 @@ function makeMidi() {
   check('import message', (await modeLine()).includes('インポート曲'), await modeLine());
   const gs4 = await page.textContent('#guideStatus');
   check('imported guide active', /16音/.test(gs4), gs4);
-  check('imported lyrics in textarea', (await page.inputValue('#lyricsInput')).includes('あいうえお'));
+  check('lyrics are not carried by export/import', !(await page.inputValue('#lyricsInput')).includes('あいうえお'));
   const sel = await page.$$eval('#songSelect option', (e) => e.map((o) => o.value + ':' + o.textContent + (o.selected ? '*' : '')));
   check('song select has both songs, import selected', sel.length === 3 && sel.some((x) => x.startsWith('abcdefghijk') && x.endsWith('*')), sel);
   await sleep(300);
@@ -222,6 +227,7 @@ function makeMidi() {
   mp.on('console', (x) => { if (x.type() === 'error') errors.push('mobile: ' + x.text()); });
   mp.on('pageerror', (e) => errors.push('mobile pageerror: ' + e.message));
   await mp.goto(BASE + '?v=dQw4w9WgXcQ');
+  await mp.click('#consentOkBtn');
   await mp.waitForFunction(() => !document.getElementById('singBtn').disabled, null, { timeout: 5000 });
   for (const t of ['guide', 'lyrics', 'history', 'settings']) {
     await mp.click(`.tabs button[data-tab=${t}]`);
