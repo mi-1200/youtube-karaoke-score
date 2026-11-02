@@ -78,6 +78,9 @@ td, th { border-bottom: 1px solid var(--line); padding: 6px 4px; text-align: lef
 .techrow { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 6px; }
 .tech { background: var(--panel2); border: 1px solid var(--line); border-radius: 999px; padding: 3px 10px; font-size: 13px; }
 .tech.bonus { border-color: var(--gold); color: var(--gold); }
+#pitchGraphBox { margin: 10px 0 4px; }
+#pitchGraphBox h4 { margin: 0 0 4px; font-size: 14px; font-weight: 600; }
+#pitchGraph { display: block; width: 100%; height: auto; background: var(--panel2); border-radius: 10px; }
 .appfoot { margin-top: 24px; text-align: center; color: var(--muted); font-size: 13px; }
 .appfoot a, .linkbtn { color: var(--accent2); }
 .linkbtn { background: none; border: none; padding: 0; text-decoration: underline; font-size: 13px; }
@@ -211,6 +214,10 @@ td, th { border-bottom: 1px solid var(--line); padding: 6px 4px; text-align: lef
     <div class="muted" id="resMode" style="text-align:center"></div>
     <canvas id="radar" width="520" height="460"></canvas>
     <div class="items" id="resItems"></div>
+    <div id="pitchGraphBox" hidden>
+      <h4>音程の推移 <span class="muted" style="font-weight:400;font-size:12px">（区間ごとの音程の正確さ）</span></h4>
+      <canvas id="pitchGraph" width="640" height="260"></canvas>
+    </div>
     <div class="comments" id="resComments"></div>
     <div class="row" style="justify-content:center;margin-top:14px">
       <button id="againBtn" class="primary">もう一度歌う</button>
@@ -1075,7 +1082,55 @@ td, th { border-bottom: 1px solid var(--line); padding: 6px 4px; text-align: lef
     $('resComments').innerHTML = '';
     res.comments.forEach((c) => { const p = document.createElement('div'); p.textContent = '・' + c; $('resComments').appendChild(p); });
     drawRadar(items);
+    $('pitchGraphBox').hidden = !(res.timeline && res.timeline.some((x) => x.acc != null));
     $('resultModal').classList.add('show');
+    if (!$('pitchGraphBox').hidden) drawPitchGraph(res.timeline);
+  }
+  // JOYSOUND風の「音程の推移」：区間ごとの正確さを折れ線で表示
+  function drawPitchGraph(tl) {
+    const c = $('pitchGraph'), g = c.getContext('2d'), W = c.width, H = c.height;
+    const L = 46, R = 14, T = 18, B = 30, pw = W - L - R, ph = H - T - B;
+    const css = getComputedStyle(document.documentElement);
+    const fg = (css.getPropertyValue('--text') || '#eee').trim() || '#eee';
+    const gold = (css.getPropertyValue('--gold') || '#ffcc33').trim() || '#ffcc33';
+    g.clearRect(0, 0, W, H);
+    const lo = 40; // 縦軸の下限（%）
+    const y = (v) => T + ph * (1 - (Math.max(lo, Math.min(100, v)) - lo) / (100 - lo));
+    const n = tl.length, x = (i) => L + pw * (n === 1 ? 0.5 : i / (n - 1));
+    g.font = '13px sans-serif'; g.textBaseline = 'middle';
+    [[100, '100%'], [85, '85%'], [lo, lo + '%']].forEach(([v, t], k) => {
+      g.strokeStyle = k === 1 ? 'rgba(255,204,51,.55)' : 'rgba(255,255,255,.18)';
+      g.setLineDash(k === 1 ? [6, 4] : []); g.lineWidth = 1;
+      g.beginPath(); g.moveTo(L, y(v)); g.lineTo(W - R, y(v)); g.stroke();
+      g.fillStyle = 'rgba(255,255,255,.6)'; g.textAlign = 'right'; g.fillText(t, L - 6, y(v));
+    });
+    g.setLineDash([]);
+    tl.forEach((s, i) => {
+      if (s.type !== 'interlude') return;
+      g.fillStyle = 'rgba(255,255,255,.06)'; g.fillRect(x(i) - 10, T, 20, ph);
+      g.save(); g.translate(x(i), T + ph / 2); g.fillStyle = 'rgba(255,255,255,.55)'; g.textAlign = 'center';
+      ['間', '奏'].forEach((ch, k) => g.fillText(ch, 0, (k - 0.5) * 15)); g.restore();
+    });
+    g.strokeStyle = fg; g.lineWidth = 2; g.beginPath(); let pen = false;
+    tl.forEach((s, i) => {
+      if (s.acc == null) { pen = false; return; }
+      if (pen) g.lineTo(x(i), y(s.acc)); else g.moveTo(x(i), y(s.acc)); pen = true;
+    });
+    g.stroke();
+    tl.forEach((s, i) => {
+      if (s.acc == null) return;
+      const px = x(i), py = y(s.acc);
+      if (s.acc >= 85) {
+        g.fillStyle = gold; g.beginPath();
+        for (let k = 0; k < 10; k++) { const r = k % 2 ? 4 : 9, a = -Math.PI / 2 + k * Math.PI / 5; g.lineTo(px + r * Math.cos(a), py + r * Math.sin(a)); }
+        g.closePath(); g.fill();
+      } else {
+        g.fillStyle = s.acc < 60 ? '#ff4d5e' : fg; g.beginPath(); g.arc(px, py, 4.5, 0, Math.PI * 2); g.fill();
+      }
+    });
+    g.fillStyle = 'rgba(255,255,255,.6)'; g.textBaseline = 'alphabetic';
+    g.textAlign = 'left'; g.fillText('開始', L, H - 8);
+    g.textAlign = 'right'; g.fillText('終了', W - R, H - 8);
   }
   function drawRadar(items) {
     const c = $('radar'), g = c.getContext('2d'), W = c.width, H = c.height, cx = W / 2, cy = H / 2 + 6, R = 150;

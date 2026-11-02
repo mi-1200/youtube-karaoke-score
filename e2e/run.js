@@ -113,7 +113,11 @@ function makeMidi() {
   check('guide result mode', (await page.textContent('#resMode')).includes('ガイドメロディ採点'), await page.textContent('#resMode'));
   check('technique row in result', /しゃくり \d+回/.test(await page.textContent('#resItems')) && /テクニック加点/.test(await page.textContent('#resItems')), await page.textContent('#resItems'));
   check('hit count line', /音程バー的中：\d+ \/ \d+/.test(await page.textContent('#resItems')), await page.textContent('#resItems'));
-  await page.screenshot({ path: path.join(SHOTS, 'desktop-result-guide.png') });
+  {
+    const pg = await page.evaluate(() => { const box = document.getElementById('pitchGraphBox'); const c = document.getElementById('pitchGraph'); const d = c.getContext('2d').getImageData(0, 0, c.width, c.height).data; let ink = 0; for (let i = 3; i < d.length; i += 4) if (d[i] > 0) ink++; return { visible: !box.hidden && box.offsetHeight > 0, ink }; });
+    check('pitch timeline graph in result', pg.visible && pg.ink > 500, pg);
+  }
+  await page.screenshot({ path: path.join(SHOTS, 'desktop-result-guide.png'), fullPage: true });
   {
     const [ddl] = await Promise.all([page.waitForEvent('download'), page.click('#debugSaveBtn')]);
     const dp = path.join(__dirname, 'debug.json'); await ddl.saveAs(dp);

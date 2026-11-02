@@ -571,3 +571,20 @@ test('judgeChunks: a long bar is judged in parts (partly right is not all right)
   // 歌唱中の表示用：until より後に終わる区切りは返さない
   assert.ok(K.judgeChunks(fr, guide, null, { until: 1.6 }).every((c) => c.t1 <= 1.6));
 });
+
+test('pitchTimeline: splits the song into segments with accuracy and interludes', () => {
+  const guide = [];
+  for (let t = 1; t < 41; t += 0.5) guide.push({ t, d: 0.45, midi: 60 });
+  for (let t = 61; t < 101; t += 0.5) guide.push({ t, d: 0.45, midi: 60 });
+  const fr = [];
+  for (let t = 0; t < 102; t += 1 / 60) fr.push({ t, midi: t < 21 ? 60 : t < 41 ? 63 : 60.1, rms: 0.05 }); // 21〜41秒だけ外す
+  const r = K.scorePerformance(fr, guide, {});
+  const tl = r.timeline;
+  assert.ok(tl.length >= 10 && tl.length <= 30, 'segments ' + tl.length);
+  assert.equal(tl.filter((s) => s.type === 'interlude').length, 1);
+  const sing = tl.filter((s) => s.type === 'sing');
+  assert.ok(sing.filter((s) => s.t1 <= 20).every((s) => s.acc > 85), JSON.stringify(sing));
+  assert.ok(sing.filter((s) => s.t0 >= 22 && s.t1 <= 41).every((s) => s.acc < 30), JSON.stringify(sing));
+  assert.ok(sing.filter((s) => s.t0 >= 61).every((s) => s.acc > 85));
+  assert.deepEqual(K.scorePerformance(fr, null, {}).timeline, undefined);
+});

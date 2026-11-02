@@ -642,6 +642,7 @@
         return { ...n, credit, hit: credit >= 0.5 };
       });
       res.chunks = chunks;
+      res.timeline = pitchTimeline(g, chunks);
       pitch = wsum ? csum / wsum : 0;
       participation = cn ? clamp(sungIn / cn / 0.5, 0, 1) : 0;
       // リズム：音の出だしと歌い出しのずれ
@@ -996,10 +997,44 @@
     return out;
   }
 
+  // 曲をいくつかの区間に分けて、区間ごとの音程の正確さ（0〜100%）を出す（結果画面の折れ線グラフ用）
+  // 2.5秒以上バーが無い所は「間奏」。歌う部分は、全体で20区間前後になる長さで等分する
+  function pitchTimeline(guide, chunks, opts) {
+    opts = opts || {};
+    if (!guide || !guide.length) return [];
+    const g = guide.slice().sort((a, b) => a.t - b.t);
+    const gap = opts.gap || 2.5;
+    const phrases = [];
+    let cur = { t0: g[0].t, t1: g[0].t + g[0].d };
+    for (const n of g.slice(1)) {
+      if (n.t - cur.t1 > gap) { phrases.push(cur); cur = { t0: n.t, t1: n.t + n.d }; }
+      else cur.t1 = Math.max(cur.t1, n.t + n.d);
+    }
+    phrases.push(cur);
+    const sungLen = phrases.reduce((a, p) => a + (p.t1 - p.t0), 0);
+    const segLen = Math.max(5, sungLen / (opts.segments || 20));
+    const out = [];
+    phrases.forEach((p, i) => {
+      if (i > 0 && p.t0 - phrases[i - 1].t1 > 8) out.push({ type: 'interlude', t0: phrases[i - 1].t1, t1: p.t0, acc: null });
+      const k = Math.max(1, Math.round((p.t1 - p.t0) / segLen));
+      for (let j = 0; j < k; j++) out.push({ type: 'sing', t0: p.t0 + (p.t1 - p.t0) * j / k, t1: p.t0 + (p.t1 - p.t0) * (j + 1) / k, acc: null });
+    });
+    for (const seg of out) {
+      if (seg.type !== 'sing') continue;
+      let cs = 0, ds = 0;
+      for (const c of chunks) {
+        const mid = (c.t0 + c.t1) / 2;
+        if (mid >= seg.t0 && mid < seg.t1 + 1e-6) { ds += c.t1 - c.t0; cs += c.credit * (c.t1 - c.t0); }
+      }
+      seg.acc = ds ? (cs / ds) * 100 : null;
+    }
+    return out;
+  }
+
   const api = {
     NOTE_NAMES, TOLERANCE, clamp, freqToMidi, midiToFreq, midiName, parseVideoId, detectPitch,
     parseLrc, formatStamp, parseMidi, toMonophonic, framesToNotes, findNote, foldDiff,
-    pitchCredit, scorePerformance, detectTechniques, techniqueBonus, detectMelody, findBarLayout, readBarPitch, estimateBarOffset, estimateBarAlignment, singingSections, inSections, maskFrames, judgeChunks,
+    pitchCredit, scorePerformance, detectTechniques, techniqueBonus, detectMelody, findBarLayout, readBarPitch, estimateBarOffset, estimateBarAlignment, singingSections, inSections, maskFrames, judgeChunks, pitchTimeline,
   };
   if (typeof module !== 'undefined' && module.exports) module.exports = api;
   else root.KaraCore = api;
