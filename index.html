@@ -178,7 +178,8 @@ td, th { border-bottom: 1px solid var(--line); padding: 6px 4px; text-align: lef
     <button id="importBtn">読み込み（JSON）</button>
     <input id="importFile" type="file" accept=".json,application/json" hidden>
   </div>
-  <p class="muted">自分の別の端末へ移すためのものです。歌詞と、動画（音・画面の音程バー）から作ったガイドは書き出しません。ガイドや歌詞を他の人に配らないでください。</p>
+  <label class="muted" style="display:block;margin-top:6px"><input id="exportPersonal" type="checkbox"> 画面の音程バーから読み取ったガイドも含める（自分のスマホなどへ移す時だけ）</label>
+  <p class="muted">自分の別の端末へ移すためのものです。歌詞は書き出しません。動画（音・画面の音程バー）から作ったガイドは、上のチェックを入れた時だけ含めます。PCで読み取った曲をスマホでガイドあり採点したい時に使ってください。ガイドや歌詞を他の人に配らないでください。</p>
 </div>
 
 <div id="tab-lyrics" class="tabpanel">
@@ -1095,15 +1096,19 @@ td, th { border-bottom: 1px solid var(--line); padding: 6px 4px; text-align: lef
     const s = song(); if (!s) { alertLine('先に動画を読み込んでください'); return; }
     // 歌詞と、動画（音・画面の音程バー）から作ったガイドは書き出さない（他の人への配布を防ぐ）
     const fromVideo = VIDEO_GUIDE_SOURCES.includes(s.guideSource);
-    const data = { app: 'utascore', version: 1, videoId: currentId, title: s.title, guide: fromVideo ? null : s.guide, guideSource: fromVideo ? '' : s.guideSource, offset: s.offset, transpose: s.transpose };
+    // チェックを入れた時だけ、自分の端末へ移す用として動画から作ったガイドも含める
+    const personal = fromVideo && $('exportPersonal').checked;
+    const omit = fromVideo && !personal;
+    const data = { app: 'utascore', version: 1, videoId: currentId, title: s.title, guide: omit ? null : s.guide, guideSource: omit ? '' : s.guideSource, offset: s.offset, transpose: s.transpose };
+    if (personal) data.personal = true;
     const a = document.createElement('a');
     a.href = URL.createObjectURL(new Blob([JSON.stringify(data, null, 1)], { type: 'application/json' }));
     a.download = (s.title || currentId).replace(/[\\/:*?"<>|]/g, '_').slice(0, 60) + '.utascore.json';
     a.click(); setTimeout(() => URL.revokeObjectURL(a.href), 1000);
     const left = [];
     if (s.lyrics) left.push('歌詞');
-    if (fromVideo && s.guide) left.push('動画から作ったガイド');
-    alertLine('書き出しました' + (left.length ? '（' + left.join('と') + 'は含めていません）' : ''));
+    if (omit && s.guide) left.push('動画から作ったガイド');
+    alertLine('書き出しました' + (left.length ? '（' + left.join('と') + 'は含めていません）' : '') + (personal ? '。動画から読み取ったガイドを含めたので、自分の端末だけで使ってください' : ''));
   };
   $('importBtn').onclick = () => $('importFile').click();
   $('importFile').onchange = async (e) => {
@@ -1113,7 +1118,7 @@ td, th { border-bottom: 1px solid var(--line); padding: 6px 4px; text-align: lef
       const d = JSON.parse(await f.text());
       if (!d.videoId) throw new Error('形式が違います');
       const s = songs[d.videoId] = Object.assign(songs[d.videoId] || { history: [] }, { title: d.title || '', offset: d.offset || 0, transpose: d.transpose || 0 },
-        d.guide && !VIDEO_GUIDE_SOURCES.includes(d.guideSource) ? { guide: d.guide, guideSource: d.guideSource || '' } : {});
+        d.guide && (!VIDEO_GUIDE_SOURCES.includes(d.guideSource) || d.personal === true) ? { guide: d.guide, guideSource: d.guideSource || '' } : {});
       persist();
       $('urlInput').value = 'https://youtu.be/' + d.videoId;
       loadVideo(d.videoId);

@@ -107,6 +107,19 @@ const check = (n, ok, info) => { console.log((ok ? 'PASS ' : 'FAIL ') + n + (inf
   const [dl] = await Promise.all([page.waitForEvent('download'), page.click('#exportBtn')]);
   const exp = JSON.parse(require('fs').readFileSync(await dl.path(), 'utf8'));
   check('export omits guide read from the screen', exp.guide === null && exp.guideSource === '', { guide: exp.guide && exp.guide.length, src: exp.guideSource });
+  {
+    // 自分の端末へ移す用：チェックを入れると画面から読んだガイドも含まれ、読み込むと使える
+    await page.check('#exportPersonal');
+    const [dl2] = await Promise.all([page.waitForEvent('download'), page.click('#exportBtn')]);
+    const p2 = await dl2.path(); const exp2 = JSON.parse(require('fs').readFileSync(p2, 'utf8'));
+    check('personal export includes screen guide', exp2.personal === true && exp2.guide && exp2.guide.length > 5 && exp2.guideSource === '画面の音程バー', { n: exp2.guide && exp2.guide.length });
+    await page.evaluate(() => { const all = JSON.parse(localStorage.getItem('utascore.songs.v1')); delete all['dQw4w9WgXcQ'].guide; localStorage.setItem('utascore.songs.v1', JSON.stringify(all)); });
+    await page.setInputFiles('#importFile', p2);
+    await page.waitForTimeout(500);
+    const gs2 = await page.textContent('#guideStatus');
+    check('personal import restores the guide', gs2.includes('画面の音程バー'), gs2);
+    await page.uncheck('#exportPersonal');
+  }
   const dbg = await page.evaluate(() => JSON.parse(localStorage.getItem('utascore.debug.v1') || '[]')[0]);
   check('debug log has screen info', dbg && dbg.screen && dbg.screen.layout && dbg.screen.frames.t.length > 50, dbg && dbg.screen && { offset: dbg.screen.offset, fit: dbg.screen.fit, src: dbg.screen.offsetSrc, step: dbg.screen.layout && dbg.screen.layout.step });
   if (process.env.DBG2) console.log(JSON.stringify({ speed: dbg.screen.speed, n: dbg.screen.speeds, bars: dbg.screen.bars.slice(0, 40), guide: await page.evaluate(() => JSON.parse(localStorage.getItem('utascore.songs.v1'))['dQw4w9WgXcQ'].guide.map((n) => [+n.t.toFixed(2), +n.d.toFixed(2), n.midi])), mel: await page.evaluate(() => window.__MEL.map((n) => [+n.t.toFixed(2), n.d, n.midi])) }));
