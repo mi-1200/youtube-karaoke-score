@@ -176,6 +176,7 @@ td, th { border-bottom: 1px solid var(--line); padding: 6px 4px; text-align: lef
   <div class="row">
     <button id="exportBtn">書き出し（JSON）</button>
     <button id="importBtn">読み込み（JSON）</button>
+    <button id="qrSendBtn">📱 スマホへQRで送る</button>
     <input id="importFile" type="file" accept=".json,application/json" hidden>
   </div>
   <label class="muted" style="display:block;margin-top:6px"><input id="exportPersonal" type="checkbox"> 画面の音程バーから読み取ったガイドも含める（自分のスマホなどへ移す時だけ）</label>
@@ -258,6 +259,17 @@ td, th { border-bottom: 1px solid var(--line); padding: 6px 4px; text-align: lef
   </div>
 </div>
 
+<div id="qrModal" class="modal">
+  <div class="card" style="text-align:center">
+    <h3 style="margin-top:0">スマホのカメラで読み取ってください</h3>
+    <div class="muted" id="qrInfo"></div>
+    <div id="qrBox" style="background:#fff;display:inline-block;padding:12px;border-radius:10px;margin:10px 0;line-height:0"></div>
+    <div class="row" style="justify-content:center"><button id="qrPrevBtn">← 前</button><span id="qrPage" style="min-width:60px;align-self:center"></span><button id="qrNextBtn">次 →</button></div>
+    <p class="muted" style="text-align:left">読み取るとスマホでうたスコアが開き、この曲が取り込まれます（複数枚ある時は全部読み取ってください。順番は自由です）。データはURLの「#」より後ろに入っていて、サーバーには送られません。自分の端末に移すためだけに使い、QRやURLを他の人に渡さないでください。</p>
+    <div class="row" style="justify-content:center"><button id="qrCloseBtn">閉じる</button></div>
+  </div>
+</div>
+
 <div id="changelogModal" class="modal">
   <div class="card">
     <h3 style="margin-top:0">更新履歴</h3>
@@ -266,6 +278,7 @@ td, th { border-bottom: 1px solid var(--line); padding: 6px 4px; text-align: lef
   </div>
 </div>
 
+<script src="vendor/qrcode.js"></script>
 <script src="version.js"></script>
 <script src="core.js"></script>
 <script>
@@ -1126,6 +1139,89 @@ td, th { border-bottom: 1px solid var(--line); padding: 6px 4px; text-align: lef
     } catch (err) { alertLine('読み込めませんでした：' + err.message); }
   };
 
+  /* ---------- QRでスマホへ移す ---------- */
+  // 曲データ（ガイド込み）を小さくまとめて圧縮し、URL の # の後ろに入れる。長い時は複数枚に分ける
+  const QR_CHUNK = 900; // スマホのカメラで読みやすい大きさ（1枚あたり約900文字）
+  const b64u = (bytes) => { let s = ''; for (let i = 0; i < bytes.length; i++) s += String.fromCharCode(bytes[i]); return btoa(s).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, ''); };
+  const unb64u = (str) => { const s = atob(str.replace(/-/g, '+').replace(/_/g, '/')); const b = new Uint8Array(s.length); for (let i = 0; i < s.length; i++) b[i] = s.charCodeAt(i); return b; };
+  async function zipText(txt, inflate) {
+    if (typeof CompressionStream === 'undefined') { if (inflate) throw new Error('このブラウザは圧縮データに対応していません。ブラウザを更新してください'); return null; }
+    if (!inflate) { try { new CompressionStream('deflate-raw'); } catch (e) { return null; } } // 古いブラウザは圧縮なしで送る
+    const st = new Blob([txt]).stream().pipeThrough(inflate ? new DecompressionStream('deflate-raw') : new CompressionStream('deflate-raw'));
+    return new Uint8Array(await new Response(st).arrayBuffer());
+  }
+  function packSong(id, s) {
+    // ガイドは 10ミリ秒単位の差分で持つ
+    const g = (s.guide || []).slice().sort((a, b) => a.t - b.t);
+    let pt = 0; const arr = [];
+    for (const n of g) { const t = Math.round(n.t * 100); arr.push(t - pt, Math.max(1, Math.round(n.d * 100)), n.midi); pt = t; }
+    return JSON.stringify({ v: 1, id, ti: (s.title || '').slice(0, 80), o: s.offset || 0, k: s.transpose || 0, src: s.guideSource || '', g: arr });
+  }
+  function unpackSong(txt) {
+    const d = JSON.parse(txt);
+    if (!d || d.v !== 1 || !d.id || !Array.isArray(d.g)) throw new Error('形式が違います');
+    const guide = []; let t = 0;
+    for (let i = 0; i + 2 < d.g.length; i += 3) { t += d.g[i]; guide.push({ t: t / 100, d: d.g[i + 1] / 100, midi: d.g[i + 2] }); }
+    return { id: d.id, title: d.ti || '', offset: d.o || 0, transpose: d.k || 0, guideSource: d.src || '', guide };
+  }
+  async function makeQrUrls(id, s) {
+    const txt = packSong(id, s);
+    const z = await zipText(txt);
+    const body = z ? 'z' + b64u(z) : 'p' + b64u(new TextEncoder().encode(txt));
+    const n = Math.max(1, Math.ceil(body.length / QR_CHUNK)), key = Math.random().toString(36).slice(2, 8);
+    const base = location.origin + location.pathname;
+    const urls = [];
+    for (let i = 0; i < n; i++) urls.push(base + '#qr=' + key + '.' + (i + 1) + '.' + n + '.' + body.slice(i * QR_CHUNK, (i + 1) * QR_CHUNK));
+    return urls;
+  }
+  let qrUrls = [], qrIdx = 0;
+  function showQr() {
+    const q = qrcode(0, 'L'); q.addData(qrUrls[qrIdx]); q.make();
+    const cells = q.getModuleCount(), size = Math.min(window.innerWidth - 80, 420), cell = Math.max(2, Math.floor(size / (cells + 8)));
+    $('qrBox').innerHTML = q.createImgTag(cell, cell * 4);
+    $('qrPage').textContent = (qrIdx + 1) + ' / ' + qrUrls.length;
+    $('qrPrevBtn').disabled = qrIdx === 0; $('qrNextBtn').disabled = qrIdx >= qrUrls.length - 1;
+  }
+  $('qrSendBtn').onclick = async () => {
+    const s = song(); if (!s) { alertLine('先に動画を読み込んでください'); return; }
+    if (!s.guide || !s.guide.length) { alertLine('この曲にはまだガイドがありません（PCで「画面の音程バーを使う」で一度歌うと作られます）'); return; }
+    try { qrUrls = await makeQrUrls(currentId, s); } catch (e) { alertLine('QRを作れませんでした：' + e.message); return; }
+    window.__utascoreQrUrls = qrUrls; // テスト用
+    qrIdx = 0;
+    $('qrInfo').textContent = '「' + (s.title || currentId) + '」のガイド ' + s.guide.length + '音' + (qrUrls.length > 1 ? '（' + qrUrls.length + '枚）' : '');
+    showQr(); $('qrModal').classList.add('show');
+  };
+  $('qrPrevBtn').onclick = () => { if (qrIdx > 0) { qrIdx--; showQr(); } };
+  $('qrNextBtn').onclick = () => { if (qrIdx < qrUrls.length - 1) { qrIdx++; showQr(); } };
+  $('qrCloseBtn').onclick = () => $('qrModal').classList.remove('show');
+  // スマホ側：QRから開いた時に取り込む。複数枚は端末に一時保存して、そろったら組み立てる
+  async function receiveQr() {
+    const m = location.hash.match(/^#qr=([a-z0-9]+)\.(\d+)\.(\d+)\.([A-Za-z0-9_-]+)$/);
+    if (!m) return null;
+    history.replaceState(null, '', location.pathname + location.search); // データをアドレス欄に残さない
+    const [, key, iStr, nStr, part] = m, i = +iStr, n = +nStr;
+    const PK = 'utascore.qr.' + key;
+    let parts = {};
+    try { parts = JSON.parse(localStorage.getItem(PK) || '{}'); } catch (e) {}
+    parts[i] = part;
+    const have = Object.keys(parts).length;
+    if (have < n) {
+      try { localStorage.setItem(PK, JSON.stringify(parts)); } catch (e) {}
+      const miss = []; for (let k = 1; k <= n; k++) if (!parts[k]) miss.push(k);
+      setTimeout(() => alertLine('QR ' + i + '/' + n + ' を読み取りました。残り ' + miss.join('・') + ' 枚目を読み取ってください'), 300);
+      return null;
+    }
+    try { localStorage.removeItem(PK); } catch (e) {}
+    let body = ''; for (let k = 1; k <= n; k++) body += parts[k];
+    const bytes = unb64u(body.slice(1));
+    const txt = body[0] === 'z' ? new TextDecoder().decode(await zipText(bytes, true)) : new TextDecoder().decode(bytes);
+    const d = unpackSong(txt);
+    songs[d.id] = Object.assign(songs[d.id] || { history: [] }, { title: d.title || (songs[d.id] && songs[d.id].title) || '', offset: d.offset, transpose: d.transpose, guide: d.guide, guideSource: d.guideSource });
+    persist(); refreshSongSelect();
+    setTimeout(() => alertLine('「' + (d.title || d.id) + '」のガイド（' + d.guide.length + '音）を取り込みました'), 300);
+    return d.id;
+  }
+
   /* ---------- 結果 ---------- */
   function showResult(res) {
     $('resTitle').textContent = song().title || '';
@@ -1351,12 +1447,17 @@ td, th { border-bottom: 1px solid var(--line); padding: 6px 4px; text-align: lef
     alertTimer = setTimeout(() => { if (mode === 'idle') el.textContent = ''; }, 6000);
   }
 
-  // 起動時：URLの ?v= か前回の曲を開く
+  // 起動時：QRから開いたら取り込み、URLの ?v= か前回の曲を開く
   refreshSongSelect();
-  const qs = new URLSearchParams(location.search).get('v');
-  let last = null; try { last = localStorage.getItem('utascore.last'); } catch (e) {}
-  const startId = K.parseVideoId(qs) || last;
-  if (startId) { $('urlInput').value = 'https://youtu.be/' + startId; loadVideo(startId); }
+  (async () => {
+    let qrId = null;
+    try { qrId = await receiveQr(); } catch (e) { setTimeout(() => alertLine('QRのデータを読み込めませんでした：' + e.message), 300); }
+    const qs = new URLSearchParams(location.search).get('v');
+    let last = null; try { last = localStorage.getItem('utascore.last'); } catch (e) {}
+    const startId = qrId || K.parseVideoId(qs) || last;
+    if (startId) { $('urlInput').value = 'https://youtu.be/' + startId; loadVideo(startId); }
+  })();
+  window.addEventListener('hashchange', async () => { try { const id = await receiveQr(); if (id) { $('urlInput').value = 'https://youtu.be/' + id; loadVideo(id); } } catch (e) { alertLine('QRのデータを読み込めませんでした：' + e.message); } });
   requestAnimationFrame(tick);
 })();
 </script>
