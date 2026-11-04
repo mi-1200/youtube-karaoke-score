@@ -443,7 +443,7 @@ td, th { border-bottom: 1px solid var(--line); padding: 6px 4px; text-align: lef
     else if (!(await startMic())) return;
     mode = newMode;
     frames = []; trail = []; liveNotes = new Map(); liveTimeline = null;
-    if (screen) { screen.frames = []; screen.notes = []; screen.barAcc = { notes: [] }; screen.segBuf = []; screen.barGuide = null; scrollToStage(); }
+    if (screen) { screen.frames = []; screen.notes = []; screen.barAcc = { notes: [] }; screen.segBuf = []; screen.barGuide = null; screen.stableSpeed = null; scrollToStage(); }
     player.seekTo(0, true);
     player.playVideo();
     $('singBtn').disabled = true; $('recGuideBtn').disabled = true; $('tabGuideBtn').disabled = true; $('stopBtn').disabled = false;
@@ -615,6 +615,15 @@ td, th { border-bottom: 1px solid var(--line); padding: 6px 4px; text-align: lef
       pairs: [], userPairs: [], offset: null, fit: 0, offsetAt: 0, frames: [], notes: [], rel: null, an: null, abuf: null, lastSample: 0,
       segPrev: null, segPrevT: 0, segW: 0, speeds: [], segBuf: [], barAcc: { notes: [] }, barGuide: null, barGuideAt: 0 };
     screen.ctx = screen.canvas.getContext('2d', { willReadFrequently: true });
+    // 映像のコマが届いた時刻を記録する（同じコマを2回読んだり、コマの間隔を読み違えたりしないため）
+    if (video.requestVideoFrameCallback) {
+      const onFrame = (nowTs, meta) => {
+        if (!screen || screen.video !== video) return;
+        screen.frameTime = (meta && (meta.captureTime || meta.expectedDisplayTime)) || nowTs; screen.frameNo = (screen.frameNo || 0) + 1;
+        video.requestVideoFrameCallback(onFrame);
+      };
+      video.requestVideoFrameCallback(onFrame);
+    }
     if (stream.getAudioTracks().length) {
       audioCtx = audioCtx || new (window.AudioContext || window.webkitAudioContext)();
       if (audioCtx.state === 'suspended') await audioCtx.resume();
@@ -741,14 +750,19 @@ td, th { border-bottom: 1px solid var(--line); padding: 6px 4px; text-align: lef
     const sp = screen.speeds; if (sp.length < 8) return null;
     const s = sp.slice().sort((a, b) => a - b), md = s[s.length >> 1];
     const mad = sp.map((v) => Math.abs(v - md)).sort((a, b) => a - b)[sp.length >> 1];
-    return md > 0 && mad < md * 0.06 ? md : null;
+    // 流れる速さは1曲の中で変わらないので、一度はっきり分かったら使い続ける
+    if (md > 0 && mad < md * 0.08) { screen.stableSpeed = md; return md; }
+    if (screen.stableSpeed) return screen.stableSpeed;
+    return md > 0 && sp.length >= 20 && mad < md * 0.15 ? md : null;
   }
   function readBarsAhead(g, t, now) {
     const L = screen.layout;
-    if (g.img.width !== screen.segW) { screen.segW = g.img.width; screen.speeds = []; screen.segPrev = null; screen.segBuf = []; }
+    if (g.img.width !== screen.segW) { screen.segW = g.img.width; screen.speeds = []; screen.segPrev = null; screen.segBuf = []; screen.stableSpeed = null; }
+    // 前回と同じコマなら読まない（同じ物を別の時刻として数えないため）
+    if (screen.frameNo != null) { if (screen.frameNo === screen.lastFrameNo) return; screen.lastFrameNo = screen.frameNo; }
     const segs = K.readBarSegments(g.img, g.rect, L);
-    // 速さは実時間（performance.now）で測る（動画の時刻は更新がまばらでがたつくため）
-    const rt = now / 1000;
+    // 速さは、コマが届いた実時間で測る（動画の時刻は更新がまばらでがたつくため）
+    const rt = (screen.frameTime != null ? screen.frameTime : now) / 1000;
     if (!screen.segPrev) { screen.segPrev = segs; screen.segPrevT = rt; }
     else {
       const v = K.estimateScrollSpeed(screen.segPrev, segs, rt - screen.segPrevT, { maxDx: g.rect.w * 0.5 });
