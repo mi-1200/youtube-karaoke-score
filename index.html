@@ -75,6 +75,15 @@ td, th { border-bottom: 1px solid var(--line); padding: 6px 4px; text-align: lef
 #radar { display: block; margin: 0 auto; width: 260px; height: 230px; }
 .comments { background: var(--panel2); border-radius: 10px; padding: 10px 14px; font-size: 14px; line-height: 1.6; }
 .songsel { margin-top: 8px; }
+/* 点数アップのアドバイス */
+#adviceBox { margin-top: 10px; background: var(--panel2); border-radius: 10px; padding: 10px 14px; font-size: 14px; line-height: 1.6; }
+#adviceBox h4 { margin: 0 0 6px; font-size: 14px; font-weight: 600; }
+.adv { margin: 6px 0; }
+.adv b { color: var(--text); }
+.adv .gain { color: var(--gold); font-size: 12px; margin-left: 6px; white-space: nowrap; }
+#aiOut { white-space: pre-wrap; margin-top: 8px; border-top: 1px solid var(--line); padding-top: 8px; }
+#aiOut:empty { display: none; }
+#aiPreview { font-size: 12px; white-space: pre-wrap; word-break: break-all; max-height: 160px; overflow: auto; background: var(--panel); padding: 6px; border-radius: 6px; }
 .techrow { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 6px; }
 .tech { background: var(--panel2); border: 1px solid var(--line); border-radius: 999px; padding: 3px 10px; font-size: 13px; }
 .updbar { background: var(--gold); color: #222; padding: 8px 14px; text-align: center; font-size: 14px; }
@@ -206,6 +215,13 @@ td, th { border-bottom: 1px solid var(--line); padding: 6px 4px; text-align: lef
     <label class="f">マイク感度（小さいほど敏感）<input id="gateInput" type="number" step="0.002" min="0.001" max="0.1" value="0.01"></label>
     <label class="f" style="flex-direction:row;align-items:center;gap:6px;color:var(--text)"><input id="echoInput" type="checkbox" checked> エコー除去（スピーカー使用時）</label>
   </div>
+  <h3>AIアドバイス</h3>
+  <p class="muted">結果画面の「🤖 AIに詳しく聞く」で、AI（Anthropic の Claude）に点数の上げ方を聞けます。使うには、ご自分の Anthropic APIキーが必要です（<a href="https://console.anthropic.com/" target="_blank" rel="noopener">Anthropic Console</a> で作れます。料金はキーの持ち主に1回あたり数円ほどかかります）。キーはこのブラウザの中だけに保存し、送り先は Anthropic（api.anthropic.com）だけです。AIに送るのは点数と項目ごとの集計の数字だけで、マイクの音声・曲名・動画・歌詞は送りません。</p>
+  <div class="row">
+    <label class="f">APIキー<input id="aiKeyInput" type="password" autocomplete="off" placeholder="sk-ant-..." style="width:220px"></label>
+    <label class="f">AIのモデル<select id="aiModelInput"><option value="claude-opus-5-5">Claude Opus 5.5（くわしい）</option><option value="claude-haiku-5-5">Claude Haiku 5.5（安い・速い）</option></select></label>
+  </div>
+  <div class="row" style="margin-top:8px"><button id="aiKeySaveBtn">キーを保存</button><button id="aiKeyClearBtn" class="danger">キーを削除</button><span id="aiKeyStatus" class="muted"></span></div>
   <h3>デバッグ記録</h3>
   <p class="muted">採点やお手本録りのたびに、毎フレームの検出音程・音量・時刻、ガイド、設定、採点の内訳、端末情報を記録します（直近5回分。録音は含みません）。書き出したJSONには、動画のIDと曲名、ブラウザや画面サイズなどの端末情報、ガイドの音程も入ります。うまく採点されないときは、中身を確認のうえ開発者に共有してください。</p>
   <div id="debugList" class="muted">まだ記録がありません。</div>
@@ -226,6 +242,12 @@ td, th { border-bottom: 1px solid var(--line); padding: 6px 4px; text-align: lef
       <canvas id="pitchGraph" width="640" height="260"></canvas>
     </div>
     <div class="comments" id="resComments"></div>
+    <div id="adviceBox">
+      <h4>💡 点数アップのアドバイス <span class="muted" style="font-weight:400;font-size:12px">（効き目が大きい順・上がる点数は目安）</span></h4>
+      <div id="adviceList"></div>
+      <div class="row" style="margin-top:8px"><button id="aiAskBtn">🤖 AIに詳しく聞く</button><span id="aiStatus" class="muted" style="font-size:12px"></span></div>
+      <div id="aiOut"></div>
+    </div>
     <div class="row" style="justify-content:center;margin-top:14px">
       <button id="againBtn" class="primary">もう一度歌う</button>
       <button id="debugSaveBtn">🐞 デバッグ記録を保存</button>
@@ -248,6 +270,15 @@ td, th { border-bottom: 1px solid var(--line); padding: 6px 4px; text-align: lef
     </ul>
     <p>使うには、<a href="https://www.youtube.com/t/terms" target="_blank" rel="noopener">YouTube利用規約</a>と、うたスコアの<a href="privacy.html" target="_blank" rel="noopener">プライバシーポリシー・利用規約</a>への同意が必要です。</p>
     <div class="row" style="justify-content:center;margin-top:14px"><button id="consentOkBtn" class="primary">同意して始める</button></div>
+  </div>
+</div>
+
+<div id="aiConsentModal" class="modal">
+  <div class="card">
+    <h3 style="margin-top:0">AIに結果を送ります</h3>
+    <p>AIアドバイスのために、次の<b>点数の集計だけ</b>を Anthropic（Claude の提供元）へ送ります。マイクの音声・曲名・動画のID・歌詞は送りません。送ったデータの扱いは <a href="https://www.anthropic.com/legal/privacy" target="_blank" rel="noopener">Anthropic のプライバシーポリシー</a> に従います。</p>
+    <details><summary class="muted">送る内容を見る</summary><div id="aiPreview"></div></details>
+    <div class="row" style="justify-content:center;margin-top:14px"><button id="aiConsentCancelBtn">やめる</button><button id="aiConsentOkBtn" class="primary">送ってアドバイスをもらう</button></div>
   </div>
 </div>
 
@@ -1267,6 +1298,7 @@ td, th { border-bottom: 1px solid var(--line); padding: 6px 4px; text-align: lef
     }
     $('resComments').innerHTML = '';
     res.comments.forEach((c) => { const p = document.createElement('div'); p.textContent = '・' + c; $('resComments').appendChild(p); });
+    renderAdvice(res);
     drawRadar(items);
     $('pitchGraphBox').hidden = !(res.timeline && res.timeline.some((x) => x.acc != null));
     $('resultModal').classList.add('show');
@@ -1405,6 +1437,80 @@ td, th { border-bottom: 1px solid var(--line); padding: 6px 4px; text-align: lef
   $('debugSaveBtn').onclick = () => downloadDebug(lastDebug);
   $('debugClearBtn').onclick = () => { try { localStorage.removeItem(DEBUG_KEY); } catch (e) {} renderDebugList(); };
   renderDebugList();
+
+  /* ---------- 点数アップのアドバイス（AI） ---------- */
+  // APIキーはデバッグ記録に入らないよう、設定とは別の場所に保存する
+  const AI_KEY = 'utascore.ai.v1';
+  const AI_MODELS = ['claude-opus-5-5', 'claude-haiku-5-5'];
+  const ai = Object.assign({ key: '', model: AI_MODELS[0], consent: false }, loadJSON(AI_KEY, {}));
+  if (!AI_MODELS.includes(ai.model)) ai.model = AI_MODELS[0];
+  let adviceRes = null, aiBusy = false;
+  function renderAdvice(res) {
+    adviceRes = res;
+    const box = $('adviceList'); box.innerHTML = '';
+    K.localAdvice(res, K.adviceSummary(res, { tolerance: settings.tolerance })).forEach((a, i) => {
+      const d = document.createElement('div'); d.className = 'adv';
+      const t = document.createElement('b'); t.textContent = (i + 1) + '. ' + a.title; d.appendChild(t);
+      if (a.gain != null) { const g = document.createElement('span'); g.className = 'gain'; g.textContent = '+' + a.gain.toFixed(1) + '点くらい'; d.appendChild(g); }
+      const p = document.createElement('div'); p.className = 'muted'; p.textContent = a.detail; d.appendChild(p);
+      box.appendChild(d);
+    });
+    $('aiOut').textContent = ''; $('aiStatus').textContent = '';
+    $('aiAskBtn').disabled = res.voicedSec < 3;
+  }
+  function askConsent(summary) {
+    if (ai.consent) return Promise.resolve(true);
+    $('aiPreview').textContent = JSON.stringify(summary, null, 1);
+    $('aiConsentModal').classList.add('show');
+    return new Promise((ok) => {
+      const done = (v) => { $('aiConsentModal').classList.remove('show'); $('aiConsentOkBtn').onclick = null; $('aiConsentCancelBtn').onclick = null; ok(v); };
+      $('aiConsentOkBtn').onclick = () => { ai.consent = true; saveJSON(AI_KEY, ai); done(true); };
+      $('aiConsentCancelBtn').onclick = () => done(false);
+    });
+  }
+  async function askAi() {
+    if (!adviceRes || aiBusy) return;
+    if (!ai.key) {
+      $('aiStatus').textContent = '';
+      $('aiOut').textContent = 'AIに聞くには、「設定」タブの「AIアドバイス」でご自分の Anthropic APIキーを入れてください。キーが無くても、上のアドバイスは使えます。';
+      return;
+    }
+    const summary = K.adviceSummary(adviceRes, { tolerance: settings.tolerance });
+    if (!(await askConsent(summary))) return;
+    const prompt = K.buildAdvicePrompt(summary);
+    aiBusy = true; $('aiAskBtn').disabled = true; $('aiStatus').textContent = 'AIが考えています…'; $('aiOut').textContent = '';
+    try {
+      const body = {
+        model: ai.model, max_tokens: 8000, system: prompt.system,
+        messages: [{ role: 'user', content: prompt.user }],
+        output_config: { effort: 'low' },
+      };
+      const headers = {
+        'content-type': 'application/json', 'x-api-key': ai.key, 'anthropic-version': '2026-10-21',
+        // ブラウザから直接呼ぶための指定（キーは利用者自身のもの）
+        'anthropic-dangerous-direct-browser-access': 'true',
+      };
+      if (ai.model === 'claude-opus-5-5') { body.fallbacks = 'default'; headers['anthropic-beta'] = 'server-side-fallback-2026-07-01'; }
+      const r = await fetch('https://api.anthropic.com/v1/messages', { method: 'POST', headers, body: JSON.stringify(body) });
+      const j = await r.json().catch(() => ({}));
+      if (!r.ok) {
+        const msg = (j.error && j.error.message) || ('HTTP ' + r.status);
+        throw new Error(r.status === 401 ? 'APIキーが正しくないようです（' + msg + '）' : r.status === 429 ? '混み合っているか、利用上限に達しました。少し待ってからもう一度どうぞ（' + msg + '）' : msg);
+      }
+      if (j.stop_reason === 'refusal') throw new Error('AIが回答できませんでした。');
+      const text = (j.content || []).filter((c) => c.type === 'text').map((c) => c.text).join('\n').trim();
+      if (!text) throw new Error('AIから答えが返りませんでした。');
+      $('aiOut').textContent = text; $('aiStatus').textContent = '';
+    } catch (e) {
+      $('aiStatus').textContent = ''; $('aiOut').textContent = 'AIに聞けませんでした：' + (e && e.message ? e.message : e);
+    } finally { aiBusy = false; $('aiAskBtn').disabled = false; }
+  }
+  $('aiAskBtn').onclick = askAi;
+  $('aiKeyInput').value = ai.key; $('aiModelInput').value = ai.model;
+  $('aiKeyStatus').textContent = ai.key ? '保存済み' : '';
+  $('aiModelInput').onchange = (e) => { ai.model = e.target.value; saveJSON(AI_KEY, ai); };
+  $('aiKeySaveBtn').onclick = () => { ai.key = $('aiKeyInput').value.trim(); saveJSON(AI_KEY, ai); $('aiKeyStatus').textContent = ai.key ? '保存しました' : 'キーが空です'; };
+  $('aiKeyClearBtn').onclick = () => { ai.key = ''; $('aiKeyInput').value = ''; saveJSON(AI_KEY, ai); $('aiKeyStatus').textContent = '削除しました'; };
 
   $('closeResBtn').onclick = () => $('resultModal').classList.remove('show');
   $('againBtn').onclick = () => { $('resultModal').classList.remove('show'); begin('sing'); };

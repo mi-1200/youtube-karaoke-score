@@ -132,6 +132,31 @@ function makeMidi() {
     const stored = await page.evaluate(() => JSON.parse(localStorage.getItem('utascore.debug.v1') || '[]').map((l) => l.kind));
     check('debug logs stored (latest first)', stored.length >= 2 && stored[0] === 'sing' && stored.includes('guide'), stored);
   }
+  // 点数アップのアドバイス（AIはモック）
+  {
+    const adv = await page.$$eval('#adviceList .adv', (e) => e.map((x) => x.textContent));
+    check('local advice shown', adv.length >= 1 && adv.length <= 4, adv);
+    await page.click('#aiAskBtn');
+    check('AI without key asks for key', /APIキー/.test(await page.textContent('#aiOut')), await page.textContent('#aiOut'));
+    let sent = null;
+    await ctx.route('https://api.anthropic.com/v1/messages', (r) => {
+      sent = { headers: r.request().headers(), body: JSON.parse(r.request().postData()) };
+      r.fulfill({ status: 200, contentType: 'application/json', headers: { 'access-control-allow-origin': '*' }, body: JSON.stringify({ stop_reason: 'end_turn', content: [{ type: 'thinking', thinking: '' }, { type: 'text', text: '総評テスト\n・音程を合わせましょう' }] }) });
+    });
+    await page.evaluate(() => { document.getElementById('aiKeyInput').value = 'sk-ant-test'; document.getElementById('aiKeySaveBtn').click(); });
+    await page.click('#aiAskBtn');
+    await page.waitForSelector('#aiConsentModal.show');
+    check('AI consent shows what is sent', /"items"/.test(await page.textContent('#aiPreview')));
+    await page.click('#aiConsentOkBtn');
+    await page.waitForFunction(() => /総評テスト/.test(document.getElementById('aiOut').textContent), null, { timeout: 3000 }).catch(() => {});
+    check('AI advice shown', /総評テスト\n・音程/.test(await page.textContent('#aiOut')), await page.textContent('#aiOut'));
+    const u = sent && sent.body.messages[0].content;
+    check('AI request: key header, summary only', sent && sent.headers['x-api-key'] === 'sk-ant-test' && sent.headers['anthropic-dangerous-direct-browser-access'] === 'true' && /"barsTotal"/.test(u) && !/frames|videoId|title/.test(u), sent && { model: sent.body.model, len: u.length });
+    const dbgHasKey = await page.evaluate(() => (localStorage.getItem('utascore.debug.v1') || '').includes('sk-ant-test') || (localStorage.getItem('utascore.settings.v1') || '').includes('sk-ant-test'));
+    check('API key not in settings/debug', !dbgHasKey);
+    await page.screenshot({ path: path.join(SHOTS, 'desktop-result-advice.png'), fullPage: true });
+    await page.evaluate(() => document.getElementById('aiKeyClearBtn').click());
+  }
   await page.click('#closeResBtn');
   await tab('settings');
   check('debug list rendered', (await page.$$('#debugList button')).length >= 2);

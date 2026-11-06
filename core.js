@@ -1304,10 +1304,136 @@
     return out;
   }
 
+
+  /* ---------- 点数アップのアドバイス ---------- */
+  // 採点の重み（scorePerformance と同じ）。「どこを上げると何点上がるか」の見積もりに使う
+  const SCORE_WEIGHTS = {
+    guide: { pitch: 0.6, stability: 0.1, rhythm: 0.1, expression: 0.1, vibrato: 0.05, longtone: 0.05 },
+    free: { pitch: 0.45, stability: 0.25, expression: 0.15, vibrato: 0.075, longtone: 0.075 },
+  };
+  function totalFrom(raw, bonus) { return Math.min(100, 100 * Math.pow(clamp(raw, 0, 100) / 100, 0.6) + (bonus || 0)); }
+  // 項目 key を delta（0〜100の値で）上げたら合計が何点上がるか。key='participation' は歌った割合を100%にした場合
+  function estimateGain(res, key, delta) {
+    if (!res || res.voicedSec < 3 || res.raw == null) return 0;
+    const w = res.hasGuide ? SCORE_WEIGHTS.guide : SCORE_WEIGHTS.free;
+    const part = res.participation == null ? 1 : res.participation;
+    const base = totalFrom(res.raw, res.bonus);
+    let raw = res.raw;
+    if (key === 'participation') raw = part > 0 ? res.raw / part : 0;
+    else {
+      const it = res.items[key];
+      if (!it || !w[key]) return 0;
+      raw += w[key] * (Math.min(100, it.value + delta) - it.value) * part;
+    }
+    return Math.max(0, totalFrom(raw, res.bonus) - base);
+  }
+  function fmtTime(t) { t = Math.max(0, Math.round(t)); return Math.floor(t / 60) + ':' + String(t % 60).padStart(2, '0'); }
+  // 採点結果を、アドバイス用の小さな集計にまとめる。
+  // AIに送るのはこの集計だけ（音声・曲名・動画ID・歌詞・毎フレームの記録は入れない）
+  function adviceSummary(res, opts) {
+    opts = opts || {};
+    const r1 = (x) => (x == null ? null : Math.round(x * 10) / 10);
+    const s = {
+      total: r1(res.total), mode: res.hasGuide ? 'ガイドメロディ採点' : 'ガイドなし採点',
+      tolerance: opts.tolerance || 'normal', sungSeconds: r1(res.voicedSec),
+      participation: Math.round((res.participation == null ? 1 : res.participation) * 100),
+      techniqueBonus: r1(res.bonus || 0), items: {},
+    };
+    for (const k in res.items) s.items[k] = { label: res.items[k].label, value: Math.round(res.items[k].value) };
+    if (res.stats) { s.vibratoSec = r1(res.stats.vibratoSec); s.longtoneCount = res.stats.longCount; s.volumeSwingDb = r1(res.stats.dbStd); }
+    if (res.timingBias != null) s.timingBiasMs = Math.round(res.timingBias * 1000);
+    if (res.techniques) s.techniques = Object.assign({}, res.techniques.counts);
+    if (res.key) s.estimatedKey = res.key;
+    if (res.hasGuide && res.notes && res.notes.length) {
+      s.barsHit = res.notes.filter((n) => n.hit).length; s.barsTotal = res.notes.length;
+      const ch = (res.chunks || []).filter((c) => c.dev != null);
+      const unsung = (res.chunks || []).length - ch.length;
+      s.unsungChunkPct = res.chunks && res.chunks.length ? Math.round(unsung / res.chunks.length * 100) : 0;
+      if (ch.length) {
+        s.meanDevSemitone = r1(ch.reduce((a, c) => a + c.dev, 0) / ch.length);
+        s.sharpPct = Math.round(ch.filter((c) => c.dev > 0.6).length / ch.length * 100);
+        s.flatPct = Math.round(ch.filter((c) => c.dev < -0.6).length / ch.length * 100);
+        // 音域別（ガイドの低い1/3・真ん中・高い1/3）
+        const tg = ch.map((c) => c.target).sort((a, b) => a - b);
+        const q1 = tg[Math.floor(tg.length / 3)], q2 = tg[Math.floor(tg.length * 2 / 3)];
+        const band = (f) => {
+          const xs = ch.filter(f);
+          if (xs.length < 3) return null;
+          return { accuracy: Math.round(xs.reduce((a, c) => a + c.credit, 0) / xs.length * 100), meanDevSemitone: r1(xs.reduce((a, c) => a + c.dev, 0) / xs.length) };
+        };
+        if (q2 > q1) s.byRange = { low: band((c) => c.target <= q1), mid: band((c) => c.target > q1 && c.target < q2), high: band((c) => c.target >= q2) };
+      }
+      const tl = (res.timeline || []).filter((x) => x.type === 'sing' && x.acc != null);
+      if (tl.length) s.weakSections = tl.slice().sort((a, b) => a.acc - b.acc).slice(0, 3)
+        .sort((a, b) => a.t0 - b.t0).map((x) => ({ from: fmtTime(x.t0), to: fmtTime(x.t1), accuracy: Math.round(x.acc) }));
+    }
+    s.gains = {};
+    for (const k in res.items) { const g = estimateGain(res, k, 15); if (g >= 0.05) s.gains[k + '+15'] = r1(g); }
+    if (s.participation < 100) s.gains['participation100'] = r1(estimateGain(res, 'participation'));
+    return s;
+  }
+  // AIを使わずに出すアドバイス（伸びしろが大きい順に最大4つ）
+  function localAdvice(res, summary) {
+    const s = summary || adviceSummary(res);
+    if (!res || res.voicedSec < 3) return [{ key: 'mic', title: 'まずは声を届けましょう', detail: '歌声がほとんど拾えていません。マイクの許可・入力音量・マイク感度（設定）を確認してください。', gain: null }];
+    const out = [];
+    const I = res.items, v = (k) => (I[k] ? I[k].value : 100);
+    const add = (key, title, detail, gain) => out.push({ key, title, detail, gain: Math.round(gain * 10) / 10 });
+    if (s.participation < 90) add('participation', '歌わない所を減らす', '採点される部分の半分以上で声が出ていないと、全体の点数がその分だけ下がります。歌詞を見て、最初から最後まで声を出し続けてみましょう。', estimateGain(res, 'participation'));
+    if (v('pitch') < 90) {
+      let d = res.hasGuide ? '音程は点数の6割を占めます。' : '音程は点数の半分近くを占めます。';
+      if (s.byRange) {
+        const worst = ['low', 'mid', 'high'].filter((k) => s.byRange[k]).sort((a, b) => s.byRange[a].accuracy - s.byRange[b].accuracy)[0];
+        const nm = { low: '低い音', mid: '真ん中の音', high: '高い音' }[worst];
+        const b = s.byRange[worst];
+        if (b && b.accuracy < 80) d += nm + 'の正確さが' + b.accuracy + '%と一番低く、' + (b.meanDevSemitone < -0.3 ? '低め（フラット）になりがちです。' + (worst === 'high' ? '高音は息の勢いを足して、上から当てるつもりで。' : '音の頭から狙った高さに当てましょう。') : b.meanDevSemitone > 0.3 ? '高め（シャープ）になりがちです。力まずに少し抑えて。' : 'ばらつきがあります。');
+      } else if (s.flatPct != null && s.flatPct > s.sharpPct + 10) d += '全体的に低め（フラット）です。';
+      else if (s.sharpPct != null && s.sharpPct > s.flatPct + 10) d += '全体的に高め（シャープ）です。';
+      const weak = (s.weakSections || []).filter((x) => x.accuracy < 85);
+      if (weak.length) d += '特に ' + weak.map((x) => x.from + '〜' + x.to + '（' + x.accuracy + '%）').join('、') + ' を重点的に練習しましょう。';
+      if (!res.hasGuide) d += 'ガイドメロディを入れると、どこがずれたかまで分かります。';
+      add('pitch', '音程を合わせる', d, estimateGain(res, 'pitch', Math.min(15, 100 - v('pitch'))));
+    }
+    if (I.rhythm && v('rhythm') < 85) {
+      const tb = s.timingBiasMs;
+      add('rhythm', 'リズム（歌い出し）を合わせる', tb != null && Math.abs(tb) > 60 ? '歌い出しが平均' + Math.abs(tb) + 'ミリ秒' + (tb > 0 ? '遅れています。音程バーの頭が縦線に来る少し前に息を吸っておきましょう。' : '早すぎます。伴奏をよく聴いて、バーの頭に合わせて入りましょう。') : '歌い出しがばらついています。伴奏のリズムをよく聴いて、バーの頭で入りましょう。', estimateGain(res, 'rhythm', Math.min(15, 100 - v('rhythm'))));
+    }
+    if (v('stability') < 75) add('stability', '声をまっすぐ保つ', '伸ばす音で声が揺れがちです。お腹から一定の息で支えると安定します。', estimateGain(res, 'stability', Math.min(15, 100 - v('stability'))));
+    if (v('expression') < 50) add('expression', '抑揚をつける', 'Aメロは抑えめ、サビは大きくと、音量に差をつけると抑揚の点が上がります。', estimateGain(res, 'expression', Math.min(15, 100 - v('expression'))));
+    if (v('vibrato') < 50) add('vibrato', 'ビブラートを入れる', 'ロングトーンの終わりに声を細かく揺らすとビブラートとして加点されます（今は' + (s.vibratoSec || 0) + '秒）。', estimateGain(res, 'vibrato', Math.min(30, 100 - v('vibrato'))) + Math.max(0, techniqueBonus(Object.assign({}, res.techniques && res.techniques.counts, { vibrato: ((res.techniques && res.techniques.counts.vibrato) || 0) + 3 })) - (res.bonus || 0)));
+    const tc = (res.techniques && res.techniques.counts) || {};
+    if ((res.bonus || 0) < 2) {
+      const miss = [['shakuri', 'しゃくり（音の頭を下からすくい上げる）'], ['kobushi', 'こぶし（音を一瞬だけ回す）'], ['fall', 'フォール（語尾を下げて抜く）']].filter(([k]) => !(tc[k] > 2));
+      if (miss.length) {
+        const nc = Object.assign({}, tc); miss.forEach(([k]) => { nc[k] = (nc[k] || 0) + 4; });
+        add('technique', 'テクニックで加点', miss.map((m) => m[1]).join('、') + 'を入れると最大3点まで加点されます。', Math.max(0, Math.min(100, res.total - (res.bonus || 0) + techniqueBonus(nc)) - res.total));
+      }
+    }
+    out.sort((a, b) => b.gain - a.gain);
+    const top = out.filter((x) => x.gain >= 0.1).slice(0, 4);
+    if (!top.length) top.push({ key: 'keep', title: 'この調子です', detail: '大きな弱点は見当たりません。テクニックの回数を増やしたり、判定を「きびしい」にして練習するとさらに伸びます。', gain: null });
+    return top;
+  }
+  // AI（Claude）に渡す指示と集計
+  function buildAdvicePrompt(summary) {
+    const system = [
+      'あなたはカラオケ採点アプリ「うたスコア」の、やさしく具体的な歌のトレーナーです。',
+      '利用者の採点結果の集計（JSON）を読み、「どうすれば点数が上がるか」を日本語でアドバイスしてください。',
+      '採点の仕組み: 合計 = 100×(素点/100)^0.6 + テクニック加点(最大3点)。素点は各項目(0〜100)の重み付き平均に「歌った割合」(participation, 100%が満点)を掛けたもの。',
+      'ガイドあり採点の重みは 音程0.6・安定性0.1・リズム0.1・抑揚0.1・ビブラート0.05・ロングトーン0.05。ガイドなしは 音程0.45・安定性0.25・抑揚0.15・ビブラート0.075・ロングトーン0.075。',
+      'gains は「その項目を15上げたら合計が何点上がるかの見積もり」。meanDevSemitone は音程のずれ(半音, マイナス=低い)。byRange は低い音・真ん中・高い音ごとの正確さ。weakSections は正確さが低い区間(分:秒)。timingBiasMs はプラスが遅れ。techniques はしゃくり・こぶし・フォール・ビブラートの回数。',
+      '書き方: まず一言で総評。次に、点数への効き目が大きい順に最大3つ、「・」で始まる箇条書きで、何が原因か・具体的な練習方法・上がりそうな点数(gainsを根拠に)を書く。最後に一言励ます。全体で400字程度。見出しやMarkdown記法(**や#)は使わない。',
+      '集計に無いこと(曲名や歌詞など)は推測しない。数字は集計の値だけを使う。',
+    ].join('\n');
+    const user = '今回の採点結果の集計です。\n' + JSON.stringify(summary);
+    return { system, user };
+  }
+
   const api = {
     NOTE_NAMES, TOLERANCE, clamp, freqToMidi, midiToFreq, midiName, parseVideoId, detectPitch,
     parseLrc, formatStamp, parseMidi, toMonophonic, framesToNotes, findNote, foldDiff,
     pitchCredit, scorePerformance, detectTechniques, techniqueBonus, detectMelody, findBarLayout, learnAutoStyle, readBarPitch, estimateBarOffset, estimateBarAlignment, singingSections, inSections, maskFrames, judgeChunks, pitchTimeline, readBarSegments, estimateScrollSpeed, accumulateBarNotes, barNotesToGuide,
+    estimateGain, adviceSummary, localAdvice, buildAdvicePrompt,
   };
   if (typeof module !== 'undefined' && module.exports) module.exports = api;
   else root.KaraCore = api;
